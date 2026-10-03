@@ -120,7 +120,7 @@ vec3 evening(vec3 c){
   // (a green in the low sun is a step DOWN as well: olive, not sand)
   // (white takes the low sun as a pale peach, not as the gold it lays on stone and grass: snow at evening)
   float white = smoothstep(0.80, 0.93, l) * (1.0 - smoothstep(0.03, 0.10, max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b))));
-  vec3 L = o * mix(vec3(1.000, 0.860, 0.660), vec3(1.000, 0.905, 0.815), white) * (1.0 - min(gr * 2.0, 0.20));
+  vec3 L = o * mix(vec3(1.000, 0.860, 0.660), vec3(1.000, 0.895, 0.830), white) * (1.0 - min(gr * 2.0, 0.20));
   L = mix(vec3(dot(L, LUMA)), L, 0.94) + vec3(0.020, 0.000, 0.000);
   vec3 S = o * vec3(0.900, 0.750, 0.860) + vec3(0.040, 0.012, 0.040);
   return mix(c, mix(S, L, lit), uEve);

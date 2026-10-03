@@ -9,6 +9,16 @@ npm ci
 npm run dev
 ```
 
+## Hour and season
+
+The scene can be seen at two hours (the day it was painted for, and evening) and in two seasons (summer, and
+under snow) - four pictures of the same place. Toggle with the buttons at the top right or `N` (day / evening)
+and `M` (summer / winter); a change is a short dissolve. To open in a given state: `?time=evening`,
+`?season=winter` (or `?eve=1&snow=1`). `?flakes=0` leaves out the falling snow.
+
+Everything is still authored for the summer day; `src/mode.js` and the "season and hour" contract at the top of
+`src/glsl.js` describe how the other three states are laid over it.
+
 ## Deployment
 
 Live site: https://an-visuals.cinne.dev

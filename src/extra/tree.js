@@ -754,7 +754,9 @@ void main(){
   // snow lies along the upper side of every bough (a brushed line, broken in places); the bark under it a step deeper
   if (uSnow > 0.0){
     float lie = toneStep(n.y, 0.50, bk.r * 0.5 + hf.a * 0.3 + bf.g * 0.2, 0.42) * smoothstep(0.35, 0.60, bk.a + 0.25);
-    c = mix(snowLand(c) * vec3(0.90, 0.89, 0.93), mix(SNOW_S, SNOW_L, smoothstep(0.24, 0.42, sh)), lie * uSnow);
+    // (a limb lost in the leaves took their green: there it is lost in the snow of the crown instead)
+    c = mix(c, snowTone(dot(c, LUMA) + 0.07), smoothstep(0.0, 0.05, c.g - c.r) * uSnow);
+    c = mix(c * vec3(0.90, 0.89, 0.93), mix(SNOW_S, SNOW_L, smoothstep(0.24, 0.42, sh)), lie * uSnow);
     gOwnSnow = true;
   }
   c = atmo(c, vP.x);

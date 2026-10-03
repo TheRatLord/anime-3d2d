@@ -730,7 +730,8 @@ vec3 snowGround(vec3 wp, float dist, float grass, float mass, float core, float 
     // two ruts, a step deeper; in stretches the earth shows in them
     float rut = 1.0 - smoothstep(0.07, 0.17, abs(pi.x - 0.52 - (st2.g - 0.5) * 0.18));
     d = mix(d, vec3(0.690, 0.735, 0.875), rut * step(0.30, st2.a) * 0.9);
-    d = mix(d, vec3(0.585, 0.525, 0.560), rut * step(0.56, st2.a) * step(0.42, st) * 0.9);
+    float bare = 1.0 - smoothstep(0.03, 0.08, abs(pi.x - 0.52 - (st2.g - 0.5) * 0.18));
+    d = mix(d, vec3(0.600, 0.545, 0.585), bare * step(0.60, st2.a) * step(0.50, st) * step(0.45, texture(uBrush, q * vec2(1.0 / 3.1, 1.0 / 1.3) + 0.17).r) * 0.85);
     s = mix(d, s, grass);
   }
   return s;

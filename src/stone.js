@@ -778,7 +778,7 @@ void main(){
     if (uSnow > 0.5){
       turf = mix(SNOW_S, SNOW_L, t);
       // (a drift is a low rounded bank, not a fringe of blades)
-      gh = (0.05 + clump * 0.13 + mound * 1.4) * max(1.0, px * 55.0);
+      gh = (0.11 + clump * 0.15 + mound * 1.4) * max(1.0, px * 55.0);
       gx = gh - base; gw = max(fwidth(gx), 0.003);
       fr = smoothstep(-gw, gw, gx) * step(abs(n.y), mix(0.6, 0.9, lumpF)) * (1.0 - cyl * step(base, -1.0));
     }

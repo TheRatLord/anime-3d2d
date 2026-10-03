@@ -56,6 +56,19 @@ mountains. It runs on an AMD Radeon 780M integrated GPU.
 - **Shared contracts live in `src/glsl.js`:** `HAZE` / `stepFog` (the stepped atmosphere), `WIND`,
   `aastep`.
 
+## Hour and season (nothing to opt into; `src/mode.js`, `MODE_GLSL` in `src/glsl.js`)
+The picture has four states: day / evening (`uEve`) x summer / snow (`uSnow`), switched at run time (`N`, `M`,
+`?eve=1`, `?snow=1`). Author every colour for the SUMMER DAY, as before. The other states follow by themselves:
+- `mat()` ends every fragment shader with `hourOf()`, and `atmo()` calls it before the air is laid:
+  `snowLand()` turns whatever is green into snow by the green's own value (light = snow in sun, mid = snow in
+  shade, dark = the dark of a winter wood), `evening()` lays the low sun (gold lights, rose-violet shade, olive
+  greens). Set `gLit = 0 / 1` before `atmo()` if the shader knows which side of the light it painted; set
+  `gOwnSnow = true` if it painted its own snow. A material that mixes haze by hand calls `hourOf(c)` first.
+- The air (`uHazeCol`, `uHazeFarCol`) and the sun (`uSunDir`, the sun map) change with the state. Anything baked
+  from the sun map at start-up must register with `onSun()` in `src/mode.js` and bake again (and keep both).
+- Check a new thing in all four states: `node tools/shot.mjs <tag> <view> --q="eve=1&snow=1"`;
+  `node tools/modeseq.mjs <tag>` exercises the toggles and the dissolve.
+
 ## What is drawn and what is left as a mass (applies to everything, nothing to opt into)
 Three shared rules decide the hierarchy of detail. They work from the finished picture's depth and flags or
 inside `atmo()`, so a new prop or far object falls under them without any code of its own.

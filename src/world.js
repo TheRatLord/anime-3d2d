@@ -59,7 +59,33 @@ export function pathDist(x, z) {
   return best;
 }
 
+// a point at arc length t along the path, with the unit direction there: [x, z, dx, dz]
+export function alongPath(t) {
+  let acc = 0;
+  for (let k = 0; k < PATH.length - 1; k++) {
+    const L = Math.hypot(PATH[k + 1][0] - PATH[k][0], PATH[k + 1][1] - PATH[k][1]);
+    if (acc + L >= t || k === PATH.length - 2) {
+      const f = (t - acc) / L, dx = (PATH[k + 1][0] - PATH[k][0]) / L, dz = (PATH[k + 1][1] - PATH[k][1]) / L;
+      return [PATH[k][0] + dx * L * f, PATH[k][1] + dz * L * f, dx, dz];
+    }
+    acc += L;
+  }
+}
+export const PATH_LEN = PATH.slice(1).reduce((a, p, i) => a + Math.hypot(p[0] - PATH[i][0], p[1] - PATH[i][1]), 0);
+
 export const SUN = new THREE.Vector3(-0.58, 0.62, 0.42).normalize();
+
+// ---- the site plan
+// What the picture is about (the middle of the chapel, 4 m up). The layout lens, the firmness of the
+// drawing, the sunnier lane between the cloud shadows and the hand-composed meadow are all laid out
+// around this point; nothing else may assume where the subject stands.
+export const SUBJECT = { x: 0, y: 4, z: -1 };
+// The floor of the building (the axis lines of its walls; the door is on the +z side): stone, not turf.
+// Whatever has to treat it differently takes this rectangle with a margin of its own (floorRect).
+export const FLOOR = { x0: -5, x1: 5, z0: -9, z1: 7 };
+// [x0, x1, z0, z1] of the floor grown by px at the sides, pz0 at the back and pz1 at the door
+export const floorRect = (px = 0, pz0 = px, pz1 = pz0) => [FLOOR.x0 - px, FLOOR.x1 + px, FLOOR.z0 - pz0, FLOOR.z1 + pz1];
+export const inRect = (r, x, z) => x > r[0] && x < r[1] && z > r[2] && z < r[3];
 
 // Floor of the nave: what is left of the paving. Three bands (west aisle, nave, east aisle), each
 // laid in its own courses so no joint runs wall to wall; the nave band has the big slabs. Most of

@@ -14,6 +14,7 @@
 import * as THREE from 'three';
 import { mat, shadowMat, WIND_GLSL } from '../glsl.js';
 import { rng, height, SUN, fbm, smooth } from '../world.js';
+import { LAYOUT, disc, ground } from '../layout.js';
 
 const gauss = (R) => (R() + R() + R() + R() - 2) * 1.732;
 const logn = (R, sigma, lo, hi) => Math.min(hi, Math.max(lo, Math.exp(gauss(R) * sigma)));
@@ -1559,8 +1560,11 @@ function trunkMesh(T, pal) {
 // ------------------------------------------------------------------ shrubs
 // each bush: a few low domes of small-leaved foliage sitting on the ground
 export function makeBushes(cards, list) {
-  const R = rng(4242);
+  const R0 = rng(4242);
   for (const b of list) {
+    // (b.seed: a bush with a random sequence of its own - give one to any bush added to the list, anywhere in
+    // it, and the others keep their shapes; without it a bush draws from the sequence shared down the list)
+    const R = b.seed !== undefined ? rng(b.seed) : R0;
     const s = b.s ?? 1;
     const clumps = [];
     const n = b.n ?? 3;
@@ -1586,9 +1590,66 @@ const ELM = { palette: [0x27405f, 0x2e6968, 0x447f60, 0x72b47c, 0xc2df88], bark:
 const LIME = { palette: [0x2a4664, 0x3b7660, 0x64974e, 0x98c866, 0xd6e678], bark: [0x89826c, 0x6f6a58, 0x4b4b5c, 0x3c394c, 0x74744f, 0x5a526e] };
 const BIRCH = { palette: [0x2b4a66, 0x3a7a6c, 0x5c9a62, 0x8fcc7e, 0xd0e888], bark: [0xc9c8b6, 0xa3a59a, 0x6c7286, 0x4a4f62, 0x8a9068, 0x6d6a88] };
 
+// ---- the planting. One entry per tree: the options of makeTree(). `turf: 'composed'` marks the four the
+// meadow was first composed around (see ground() in src/layout.js); `turf: false` keeps the grass from
+// taking any notice of a tree.
+const SAP = { habit: 'leader', depth: 3, card: 0.46, clump: 0.56, minCards: 4, fog: 0.03, bias: -0.12 };
+export const TREES = [
+  // the big tree west of the chapel: its shadow falls across the west wall and the nave
+  { x: -11.5, z: 3.5, height: 14, trunk: 0.62, seed: 11, lean: [0.10, -0.05], fine: true, ...OAK, turf: 'composed' },
+  // dark foreground framing tree beside the path, south-east of the chapel
+  { x: 17, z: 18.5, height: 7.5, trunk: 0.42, seed: 5, lean: [-0.16, -0.06], bias: -0.14, card: 0.6, spread: 1.6, fine: true, turf: 'composed' },
+  // smaller ones down the slopes
+  { x: 13, z: -17, height: 8.5, trunk: 0.34, seed: 23, lean: [-0.1, 0.05], forks: 3, clump: 0.8, card: 0.6, trunkH: 0.3, ...LIME, turf: 'composed' },
+  { x: -24, z: -13, height: 7.5, trunk: 0.3, seed: 41, lean: [0.06, 0.1], forks: 3, clump: 0.78, card: 0.58, spread: 1.1, turf: 'composed' },
+  // --- the hilltop rim: dark near shapes to frame every outward view (kept out of the SSE vista corridor)
+  // tall, narrow elm to the north
+  { x: -10, z: -48, height: 14.5, trunk: 0.55, seed: 61, lean: [0.05, 0.03], trunkH: 0.44, spread: 0.8, forks: 3, fog: 0.04, bias: -0.05, ...ELM },
+  // broad, leaning lime on the east shoulder
+  { x: 37.5, z: 6.5, height: 11, trunk: 0.5, seed: 73, lean: [0.2, 0.08], trunkH: 0.28, spread: 1.75, forks: 3, fog: 0.04, bias: -0.13, clumpY: 0.4, bark: LIME.bark },
+  // low-forking, two-stemmed oak to the south-west
+  { x: -34, z: 26, height: 9, trunk: 0.44, seed: 87, lean: [-0.15, 0.1], trunkH: 0.17, spread: 1.15, forks: 2, fog: 0.03, bias: -0.08, clump: 0.9, card: 0.66 },
+  // saplings: one slender stem with short side limbs, many small clumps
+  { ...SAP, ...BIRCH, x: -46, z: -8, height: 7.5, trunk: 0.13, seed: 101, lean: [0.07, -0.04] },
+  { ...SAP, ...BIRCH, x: -44.2, z: -5.6, height: 5.2, trunk: 0.09, seed: 103, lean: [-0.08, 0.06] },
+  { ...SAP, ...ELM, x: -31, z: -43, height: 7.5, trunk: 0.16, seed: 107, lean: [-0.05, 0.08], limbLen: 0.26 },
+  { ...SAP, x: -13.5, z: 33.5, height: 6.5, trunk: 0.14, seed: 109, lean: [0.1, 0.02], limbLen: 0.34 },
+  { ...SAP, ...LIME, x: 31, z: -33, height: 7, trunk: 0.15, seed: 113, lean: [0.06, 0.09] },
+  { ...SAP, ...ELM, x: 25, z: 40, height: 8, trunk: 0.17, seed: 131, lean: [0.05, -0.06], limbLen: 0.24, bias: -0.16 },
+  { ...SAP, ...BIRCH, x: 33, z: 21, height: 6, trunk: 0.12, seed: 127, lean: [-0.06, -0.08] },
+];
+// shrubs: see makeBushes()
+export const BUSHES = [
+  { x: -6.2, z: -6.5, s: 1.1, n: 3, dir: 1.57 },
+  { x: -6.0, z: 5.6, s: 0.85, n: 2, dir: 1.3 },
+  { x: 6.1, z: -7.6, s: 1.0, n: 3, dir: 1.57 },
+  { x: -2.6, z: -10.2, s: 1.15, n: 4, dir: 0.0, len: 2.2 },
+  { x: 3.8, z: -10.0, s: 0.8, n: 2, dir: 0.2 },
+  { x: 9.6, z: 1.2, s: 0.9, n: 3 },
+  { x: 11.4, z: 5.0, s: 0.7, n: 2 },
+  { x: 7.0, z: -3.6, s: 0.75, n: 2 },
+  // rim thickets
+  { x: 15.6, z: 31.5, s: 1.3, n: 3, len: 1.6 },
+  { x: -40, z: 9, s: 1.9, n: 4, len: 2.0, tall: 1.2 },
+  { x: -17, z: 38, s: 1.7, n: 3, tall: 1.15 },
+  { x: 27, z: -27, s: 1.6, n: 4, len: 2.0 },
+  { x: 5, z: -40, s: 2.0, n: 4, len: 2.2, tall: 1.2 },
+  { x: -37, z: -25, s: 1.5, n: 3 },
+  { x: 40, z: -8, s: 1.8, n: 3, tall: 1.2 },
+  { x: -30, z: 30.5, s: 1.2, n: 2 },
+  { x: 8.2, z: 42, s: 1.5, n: 3 },
+  { x: 17, z: 37, s: 1.7, n: 4, len: 2.0, tall: 1.15 },
+];
+// The foot of every trunk on the turf, declared at load: the grass keeps off it, stands a dark fringe at it
+// and a wider apron of taller grass round it. (What the walker bumps into is the trunk as built - TRUNKS.)
+TREES.forEach((t, i) => {
+  if (t.turf === false) return;
+  ground(disc(t.x, t.z, t.trunk * 1.2), { apron: true, ...(t.turf === 'composed' ? { seq: 100 + i } : {}) });
+});
+
 // Footprints of the trunks of every tree on the hilltop, for collision and lens clamping: [x, z, radius],
 // centre and radius taken 1.6 m above the ground. EMPTY until the default export below has run (it is
-// filled while the trees are built), so read it at use time, not at import time.
+// filled while the trees are built, and declared to the layout as it goes), so read it at use time.
 export const TRUNKS = [];
 
 export default function (scene) {
@@ -1596,53 +1657,13 @@ export default function (scene) {
   const stats = [];
   TRUNKS.length = 0;
   const ctx = { cards: new Cards(), leafTab: new Table(8), barkTab: new Table(8), trunk: { pos: [], nrm: [], v: [], l: [], t: [], idx: [] } };
-  const T = (o) => { const st = makeTree(ctx, o); stats.push(st); if (st.foot) TRUNKS.push(st.foot.map((v) => +v.toFixed(3))); };
-  // the big tree west of the chapel: its shadow falls across the west wall and the nave
-  T({ x: -11.5, z: 3.5, height: 14, trunk: 0.62, seed: 11, lean: [0.10, -0.05], fine: true, ...OAK });
-  // dark foreground framing tree beside the path, south-east of the chapel
-  T({ x: 17, z: 18.5, height: 7.5, trunk: 0.42, seed: 5, lean: [-0.16, -0.06], bias: -0.14, card: 0.6, spread: 1.6, fine: true });
-  // smaller ones down the slopes
-  T({ x: 13, z: -17, height: 8.5, trunk: 0.34, seed: 23, lean: [-0.1, 0.05], forks: 3, clump: 0.8, card: 0.6, trunkH: 0.3, ...LIME });
-  T({ x: -24, z: -13, height: 7.5, trunk: 0.3, seed: 41, lean: [0.06, 0.1], forks: 3, clump: 0.78, card: 0.58, spread: 1.1 });
-  // --- the hilltop rim: dark near shapes to frame every outward view (kept out of the SSE vista corridor)
-  // tall, narrow elm to the north
-  T({ x: -10, z: -48, height: 14.5, trunk: 0.55, seed: 61, lean: [0.05, 0.03], trunkH: 0.44, spread: 0.8, forks: 3, fog: 0.04, bias: -0.05, ...ELM });
-  // broad, leaning lime on the east shoulder
-  T({ x: 37.5, z: 6.5, height: 11, trunk: 0.5, seed: 73, lean: [0.2, 0.08], trunkH: 0.28, spread: 1.75, forks: 3, fog: 0.04, bias: -0.13, clumpY: 0.4, bark: LIME.bark });
-  // low-forking, two-stemmed oak to the south-west
-  T({ x: -34, z: 26, height: 9, trunk: 0.44, seed: 87, lean: [-0.15, 0.1], trunkH: 0.17, spread: 1.15, forks: 2, fog: 0.03, bias: -0.08, clump: 0.9, card: 0.66 });
-  // saplings: one slender stem with short side limbs, many small clumps
-  const SAP = { habit: 'leader', depth: 3, card: 0.46, clump: 0.56, minCards: 4, fog: 0.03, bias: -0.12 };
-  T({ ...SAP, ...BIRCH, x: -46, z: -8, height: 7.5, trunk: 0.13, seed: 101, lean: [0.07, -0.04] });
-  T({ ...SAP, ...BIRCH, x: -44.2, z: -5.6, height: 5.2, trunk: 0.09, seed: 103, lean: [-0.08, 0.06] });
-  T({ ...SAP, ...ELM, x: -31, z: -43, height: 7.5, trunk: 0.16, seed: 107, lean: [-0.05, 0.08], limbLen: 0.26 });
-  T({ ...SAP, x: -13.5, z: 33.5, height: 6.5, trunk: 0.14, seed: 109, lean: [0.1, 0.02], limbLen: 0.34 });
-  T({ ...SAP, ...LIME, x: 31, z: -33, height: 7, trunk: 0.15, seed: 113, lean: [0.06, 0.09] });
-  T({ ...SAP, ...ELM, x: 25, z: 40, height: 8, trunk: 0.17, seed: 131, lean: [0.05, -0.06], limbLen: 0.24, bias: -0.16 });
-  T({ ...SAP, ...BIRCH, x: 33, z: 21, height: 6, trunk: 0.12, seed: 127, lean: [-0.06, -0.08] });
+  for (const o of TREES) {
+    const st = makeTree(ctx, o); stats.push(st);
+    if (st.foot) { const f = st.foot.map((v) => +v.toFixed(3)); TRUNKS.push(f); LAYOUT.stand.push(f); }
+  }
   const bushes = new Cards();
   bushes.row = ctx.leafTab.add(leafRow({ id: 0.47, bias: -0.03 }));
-  stats.push(makeBushes(bushes, [
-    { x: -6.2, z: -6.5, s: 1.1, n: 3, dir: 1.57 },
-    { x: -6.0, z: 5.6, s: 0.85, n: 2, dir: 1.3 },
-    { x: 6.1, z: -7.6, s: 1.0, n: 3, dir: 1.57 },
-    { x: -2.6, z: -10.2, s: 1.15, n: 4, dir: 0.0, len: 2.2 },
-    { x: 3.8, z: -10.0, s: 0.8, n: 2, dir: 0.2 },
-    { x: 9.6, z: 1.2, s: 0.9, n: 3 },
-    { x: 11.4, z: 5.0, s: 0.7, n: 2 },
-    { x: 7.0, z: -3.6, s: 0.75, n: 2 },
-    // rim thickets
-    { x: 15.6, z: 31.5, s: 1.3, n: 3, len: 1.6 },
-    { x: -40, z: 9, s: 1.9, n: 4, len: 2.0, tall: 1.2 },
-    { x: -17, z: 38, s: 1.7, n: 3, tall: 1.15 },
-    { x: 27, z: -27, s: 1.6, n: 4, len: 2.0 },
-    { x: 5, z: -40, s: 2.0, n: 4, len: 2.2, tall: 1.2 },
-    { x: -37, z: -25, s: 1.5, n: 3 },
-    { x: 40, z: -8, s: 1.8, n: 3, tall: 1.2 },
-    { x: -30, z: 30.5, s: 1.2, n: 2 },
-    { x: 8.2, z: 42, s: 1.5, n: 3 },
-    { x: 17, z: 37, s: 1.7, n: 4, len: 2.0, tall: 1.15 },
-  ]));
+  stats.push(makeBushes(bushes, BUSHES));
   // four draws in all: the cores first (they hide what lies behind them), the trunks, the trees' leaves, the shrubs
   const pal = ctx.leafTab.texture();
   scene.add(blobMesh(atlas));

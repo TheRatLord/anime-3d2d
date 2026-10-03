@@ -24,9 +24,9 @@
 // changes), so the vertex shader sees a few thousand instances instead of ~270 000.
 import * as THREE from 'three';
 import { G, mat, WIND_GLSL } from '../glsl.js';
-import { rng, height, smooth, onSlab, PATH, vnoise, fbm } from '../world.js';
+import { rng, height, smooth, onSlab, vnoise, alongPath, PATH_LEN, floorRect, inRect, SUBJECT } from '../world.js';
+import { LAYOUT, composed, added } from '../layout.js';
 import { GRASS_GLSL, FLOWER_HUE_GLSL, FLOWER_COLS, GROUND_UNIFORMS, GMAP, meadowAt, pathEdge, pathInfo, flowerDrift, flowerFam, bloomGather, BAND_SHARE, massRaw, massExtra, MASS2_BOX } from '../terrain.js';
-import * as RUIN from '../ruin.js';
 import { makeTuftAtlas, CELLS, COLS, ROWS, TOP_ROW } from './grass-atlas.js';
 
 // ---------------------------------------------------------------- categories of tufts
@@ -734,93 +734,29 @@ export default function (scene) {
   const layerOf = Object.fromEntries(TUFT_LAYERS.map((l, i) => [l.cat, i]));
 
   // ---------------------------------------------------------------- what stands where
-  const box = (cx, cz, hx, hz) => ({ d: (x, z) => Math.max(Math.abs(x - cx) - hx, Math.abs(z - cz) - hz), bb: [cx - hx, cx + hx, cz - hz, cz + hz], per: 4 * (hx + hz) });
-  const disc = (cx, cz, r) => ({ d: (x, z) => Math.hypot(x - cx, z - cz) - r, bb: [cx - r, cx + r, cz - r, cz + r], per: 6.283 * r });
-  // a point at arc length t along the path, with the unit direction there
-  const alongPath = (t) => {
-    let acc = 0;
-    for (let k = 0; k < PATH.length - 1; k++) {
-      const L = Math.hypot(PATH[k + 1][0] - PATH[k][0], PATH[k + 1][1] - PATH[k][1]);
-      if (acc + L >= t || k === PATH.length - 2) {
-        const f = (t - acc) / L, dx = (PATH[k + 1][0] - PATH[k][0]) / L, dz = (PATH[k + 1][1] - PATH[k][1]) / L;
-        return [PATH[k][0] + dx * L * f, PATH[k][1] + dz * L * f, dx, dz];
-      }
-      acc += L;
-    }
-  };
-  const PATH_LEN = PATH.slice(1).reduce((a, p, i) => a + Math.hypot(p[0] - PATH[i][0], p[1] - PATH[i][1]), 0);
-  // the dry-stone wall: 2.6 m east of the path centre line, from 26 m along it, with collapsed
-  // stretches (same formulas as wallAlong in props.js). Grass gathers only where it stands, in
-  // broken runs of 1-4 m.
-  const WALL_FROM = 26;
-  const wallTop = (d) => {
-    const prof = 0.5 + Math.sin(d * 0.19 + 1.3) * 0.12 + Math.sin(d * 0.47) * 0.08 + (fbm(d * 0.35, 3.3, 2) - 0.5) * 0.25;
-    const fallen = fbm(d * 0.085 + 9, 1.7, 2);
-    return fallen > 0.62 ? prof * Math.max(0, 1 - (fallen - 0.62) * 9) : prof;
-  };
-  const WSEG = [];
-  {
-    let acc = 0;
-    for (let i = 0; i < PATH.length - 1; i++) {
-      const ax = PATH[i][0], az = PATH[i][1], bx = PATH[i + 1][0], bz = PATH[i + 1][1];
-      const L = Math.hypot(bx - ax, bz - az), dx = (bx - ax) / L, dz = (bz - az) / L;
-      const t0 = Math.max(0, (WALL_FROM - acc) / L);
-      if (t0 < 1) WSEG.push([ax + dx * L * t0 + dz * 2.6, az + dz * L * t0 - dx * 2.6, bx + dz * 2.6, bz - dx * 2.6]);
-      acc += L;
-    }
-  }
-  const dryWall = {
-    d: (x, z) => {
-      let best = 1e9;
-      for (const [ax, az, bx, bz] of WSEG) {
-        const dx = bx - ax, dz = bz - az;
-        const t = Math.min(1, Math.max(0, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz)));
-        best = Math.min(best, Math.hypot(x - ax - dx * t, z - az - dz * t));
-      }
-      return best - 0.27;
-    },
-    bb: [Math.min(...WSEG.map((s) => Math.min(s[0], s[2]))) - 0.3, Math.max(...WSEG.map((s) => Math.max(s[0], s[2]))) + 0.3,
-      Math.min(...WSEG.map((s) => Math.min(s[1], s[3]))) - 0.3, Math.max(...WSEG.map((s) => Math.max(s[1], s[3]))) + 0.3],
-    per: 2 * WSEG.reduce((a, s) => a + Math.hypot(s[2] - s[0], s[3] - s[1]), 0),
-    gate: (x, z) => { const s = pathInfo(x, z).s; return wallTop(s) > 0.14 && vnoise(s / 1.7 + 31.7, 5.5) > 0.44; },
-    solid: (x, z) => wallTop(pathInfo(x, z).s) > 0.05,
-  };
-  const TREES = [[-11.5, 3.5, 0.62], [17, 18.5, 0.42], [13, -17, 0.34], [-24, -13, 0.3]];
-  const SOLIDS = [
-    box(-5, -1, 0.43, 8.0), box(5, -1, 0.43, 8.0),                    // nave walls (the east one is low stubs)
-    box(0, -9, 5.5, 0.52),                                           // back facade
-    box(-5.15, -8.9, 0.76, 0.82), box(5.15, -8.9, 0.76, 0.82),        // corner buttresses
-    box(-5.55, -3.1, 0.47, 0.52), box(-5.55, 1.5, 0.47, 0.52), box(5.55, -3.1, 0.47, 0.52),
-    box(-5, 7.2, 0.66, 0.66), box(5, 7.2, 0.66, 0.66),                // door piers
-    box(-2.6, -3.6, 0.63, 0.63), box(2.6, -3.6, 0.63, 0.63), box(-2.6, 1.6, 0.63, 0.63), box(2.6, 1.6, 0.63, 0.63),
-    box(0, -6.6, 1.46, 0.86),                                        // altar
-    box(-4.2, 14.5, 0.76, 0.76),                                     // wayside cross
-    box(0, 8.55, 2.5, 1.0),                                          // door steps
-    ...[[1.2, -1.7], [3.5, -0.4], [0.9, 3.4], [3.7, 3.2], [-0.6, 0.6]].map(([x, z]) => disc(x, z, 0.46)),   // fallen drums
-    ...TREES.map(([x, z, r]) => disc(x, z, r * 1.2)),
-    dryWall,
-  ];
-  // fence posts: 2.3 m west of the path, from 30 m along it
-  for (let i = 0; i < 9; i++) {
-    if (i === 4) continue;
-    const [px, pz, dx, dz] = alongPath(30 + i * 2.6);
-    SOLIDS.push(disc(px - dz * 2.3, pz + dx * 2.3, 0.09));
-  }
+  // Everything that stands on the turf is declared in the layout (src/layout.js) by the module that builds
+  // it. SOLIDS: the footprints this meadow was first composed around, in the order of the one random
+  // sequence its scatter is drawn from.
+  const SOLIDS = composed();
+  // (what blocks at the moment: the composed footprints while their scatter is drawn, everything once it is done)
+  let solids = SOLIDS;
   const solidDist = (x, z) => {
     let b = 1e9;
-    for (const s of SOLIDS) {
+    for (const s of solids) {
       if (x < s.bb[0] - 1 || x > s.bb[1] + 1 || z < s.bb[2] - 1 || z > s.bb[3] + 1) continue;
       const d = s.d(x, z);
       if (d < b && (!s.solid || d > 0.03 || s.solid(x, z))) b = d;
     }
     return b;
   };
-  const inNave = (x, z) => x > -4.57 && x < 4.57 && z > -8.5 && z < 7.6;
+  // on the floor of the building, clear of its walls
+  const NAVE = floorRect(-0.43, -0.5, 0.6);
+  const inNave = (x, z) => inRect(NAVE, x, z);
   // stones lying about (src/ruin.js keeps the list; it may be missing, empty or longer one day):
   // nothing roots under a stone. Hashed into 2 m cells.
   const rockGrid = new Map(), ROCK_REACH = 0.72;
-  for (const r of (Array.isArray(RUIN.ROCKS) ? RUIN.ROCKS : [])) {
-    if (!r || !Number.isFinite(+r[0]) || !Number.isFinite(+r[1])) continue;
+  const rockIn = (r) => {
+    if (!r || !Number.isFinite(+r[0]) || !Number.isFinite(+r[1])) return;
     const rx = +r[0], rz = +r[1], rad = Math.min(3, Math.max(0.08, Number.isFinite(+r[2]) ? +r[2] : 0.25) * 1.3 + 0.05);
     const top = Number.isFinite(+r[3]) ? +r[3] : height(rx, rz) + rad;
     const reach = rad + ROCK_REACH;
@@ -829,7 +765,9 @@ export default function (scene) {
       if (!rockGrid.has(k)) rockGrid.set(k, []);
       rockGrid.get(k).push([rx, rz, rad, top]);
     }
-  }
+  };
+  // (r[4]: a stone added since the meadow was composed - see lyingStone() in src/layout.js; it comes in below)
+  for (const r of LAYOUT.lying) if (!r?.[4]) rockIn(r);
   // A card is flat and turns to face the eye: a tuft rooted right beside a stone swings its blades across
   // the stone's faces from one side or the other, and from above it lies over the top. So everything keeps
   // clear of a stone by the half width of its own card (tufts: ~0.5 x their size; the lying clump the same)
@@ -1003,27 +941,46 @@ export default function (scene) {
 
   // contact fringes: a ring of short dark strokes at the foot of every static object,
   // so that nothing ends on a clean line
-  const contactTuft = (x, z, tall) => {
-    const k = R();
-    const size = tall && k > 0.86 ? 0.42 + R() * 0.3 : k < 0.5 ? 0.34 + R() * 0.28 : 0.28 + R() * 0.22;
-    const ok = tuft(x, z, tall && k > 0.86 ? (R() < 0.7 ? 6 : 8) : kindFor(size), size, 2);
+  // (RR: the random sequence it is drawn from - the composed one, or a footprint's own)
+  // (sc: the tufts at the foot of a slender thing are smaller)
+  const contactTuft = (x, z, tall, RR = R, sc = 1) => {
+    const k = RR();
+    const size = (tall && k > 0.86 ? 0.42 + RR() * 0.3 : k < 0.5 ? 0.34 + RR() * 0.28 : 0.28 + RR() * 0.22) * sc;
+    const ok = tuft(x, z, tall && k > 0.86 ? (RR() < 0.7 ? 6 : 8) : kindFor(size, RR()), size, 2, RR);
     if (ok) splat(x, z, 0.30, 0.9);
     return ok;
   };
-  for (const s of SOLIDS) {
+  const fringe = (s, RR = R, sc = 1) => {
     const want = Math.max(8, Math.round(s.per * 17));
     const m = 0.55;
     let got = 0;
     for (let tries = 0; tries < want * 60 && got < want; tries++) {
-      const x = s.bb[0] - m + R() * (s.bb[1] - s.bb[0] + 2 * m), z = s.bb[2] - m + R() * (s.bb[3] - s.bb[2] + 2 * m);
+      const x = s.bb[0] - m + RR() * (s.bb[1] - s.bb[0] + 2 * m), z = s.bb[2] - m + RR() * (s.bb[3] - s.bb[2] + 2 * m);
       const d = s.d(x, z);
       if (d < 0.03 || d > m) continue;
-      if (R() > Math.exp(-(d * d) / 0.035)) continue;
+      if (RR() > Math.exp(-(d * d) / 0.035)) continue;
       if (s.gate) { got++; if (!s.gate(x, z)) continue; }
       // inside the nave the fringe is thinner (it only lives in the joints and gaps of the floor)
-      if (contactTuft(x, z, !inNave(x, z)) && !s.gate) got++;
+      if (contactTuft(x, z, !inNave(x, z), RR, sc) && !s.gate) got++;
     }
-  }
+  };
+  for (const s of SOLIDS) if (s.fringe) fringe(s);
+  // a broken ring of short dark blades at the foot of a stone lying in the grass; returns how many stand
+  const stoneRing = (r, RR) => {
+    if (!r || !Number.isFinite(+r[0]) || !Number.isFinite(+r[1])) return 0;
+    const rx = +r[0], rz = +r[1], rad = Math.min(3, Math.max(0.08, Number.isFinite(+r[2]) ? +r[2] : 0.25) * 1.3 + 0.05);
+    if (inNave(rx, rz) && onSlab(rx, rz)) return 0;
+    const a0 = RR() * 6.2832, open = 1.2 + RR() * 1.6, n = Math.round(5 + rad * 12);
+    let got = 0;
+    for (let j = 0; j < n; j++) {
+      const a = a0 + open * 0.5 + RR() * (6.2832 - open), size = 0.15 + RR() * 0.15;
+      const dd = rad + 0.05 + size * 0.44 + RR() * RR() * 0.22;
+      const x = rx + Math.cos(a) * dd, z = rz + Math.sin(a) * dd * 0.9;
+      if (pathEdge(x, z).edge < 0.1) continue;
+      if (tuft(x, z, kindFor(size, RR()), size, inNave(x, z) ? 1 : 2, RR)) { splat(x, z, 0.24, 0.55); got++; }
+    }
+    return got;
+  };
   // The chapel does not stand ON the lawn, it is sunk in it: along the outside of its walls an IRREGULAR fringe
   // of taller grass and weeds, swelling out to a metre in places (a world-fixed noise decides where) and
   // absent in others, tallest against the stone, on a dark contact shape of the same outline. No two metres
@@ -1047,19 +1004,7 @@ export default function (scene) {
     }
     // the same at the foot of every stone lying in the grass: a broken ring of short dark blades (they stand
     // just clear of it, see onRock) on a dark contact shape, open on one side
-    for (const r of (Array.isArray(RUIN.ROCKS) ? RUIN.ROCKS : [])) {
-      if (!r || !Number.isFinite(+r[0]) || !Number.isFinite(+r[1])) continue;
-      const rx = +r[0], rz = +r[1], rad = Math.min(3, Math.max(0.08, Number.isFinite(+r[2]) ? +r[2] : 0.25) * 1.3 + 0.05);
-      if (inNave(rx, rz) && onSlab(rx, rz)) continue;
-      const a0 = R3() * 6.2832, open = 1.2 + R3() * 1.6, n = Math.round(5 + rad * 12);
-      for (let j = 0; j < n; j++) {
-        const a = a0 + open * 0.5 + R3() * (6.2832 - open), size = 0.15 + R3() * 0.15;
-        const dd = rad + 0.05 + size * 0.44 + R3() * R3() * 0.22;
-        const x = rx + Math.cos(a) * dd, z = rz + Math.sin(a) * dd * 0.9;
-        if (pathEdge(x, z).edge < 0.1) continue;
-        if (tuft(x, z, kindFor(size, R3()), size, inNave(x, z) ? 1 : 2, R3)) { splat(x, z, 0.24, 0.55); nFr++; }
-      }
-    }
+    for (const r of LAYOUT.lying) if (!r?.[4]) nFr += stoneRing(r, R3);
     console.info(`[grass] wall and stone fringe: ${nFr} tufts`);
   }
   // gaps and joints of the nave floor
@@ -1077,11 +1022,16 @@ export default function (scene) {
     if (tuft(x, z, kindFor(size), size, 2)) splat(x, z, 0.36, 0.5);
   }
   // trees: a wider apron of taller grass around the trunk
-  for (const t of TREES) for (let i = 0; i < 170; i++) {
-    const a = R() * Math.PI * 2, rr = t[2] * 1.2 + 0.1 + Math.abs(gauss()) * 1.3;
-    const size = R() < 0.4 ? 0.3 + R() * 0.2 : 0.45 + R() * 0.35;
-    if (tuft(t[0] + Math.cos(a) * rr, t[1] + Math.sin(a) * rr, kindFor(size), size, 2)) splat(t[0] + Math.cos(a) * rr, t[1] + Math.sin(a) * rr, 0.36, 0.4);
-  }
+  // (n tufts within about `reach` metres of the foot)
+  const apron = (s, n = 170, reach = 1.3, RR = R, sc = 1) => {
+    const t = s.c;
+    for (let i = 0; i < n; i++) {
+      const a = RR() * Math.PI * 2, rr = t[2] + 0.1 + Math.abs((RR() + RR() + RR() - 1.5) * 0.82) * reach;
+      const size = (RR() < 0.4 ? 0.3 + RR() * 0.2 : 0.45 + RR() * 0.35) * sc;
+      if (tuft(t[0] + Math.cos(a) * rr, t[1] + Math.sin(a) * rr, kindFor(size, RR()), size, 2, RR)) splat(t[0] + Math.cos(a) * rr, t[1] + Math.sin(a) * rr, 0.36, 0.4);
+    }
+  };
+  for (const s of SOLIDS) if (s.apron) apron(s);
 
   // ---------------------------------------------------------------- (c) tall weed clumps, every 8-15 m
   let nWeed = 0;
@@ -1154,7 +1104,7 @@ export default function (scene) {
       else if (c === 0 && skirtOk && R() < 0.028) { n = 1 + Math.floor(R() * 3); spread = 0.10 + R() * 0.14; loose = 1; }
       if (!n) continue;
       // (taller in the rough grass at the foot of the chapel, where they have to stand clear of its fringe)
-      const foot = 1 - smooth(10.8, 13.2, Math.hypot(x, z + 1));
+      const foot = 1 - smooth(10.8, 13.2, Math.hypot(x - SUBJECT.x, z - SUBJECT.z));
       const big = (0.82 + R() * R() * 1.0) * (1 + 0.35 * foot) * (body ? 0.85 + 0.35 * ck : 1), tall = (0.07 + R() * 0.09) * (1 + 2.0 * foot);               // a cluster shares its species
       // (the share of its blooms that stand on into the middle distance: more at the rim of a drift and off it)
       // (and in the band at the foot of the chapel west of the door more of them, where front looks at it over ~14 m
@@ -1226,6 +1176,54 @@ export default function (scene) {
       for (let k = 0; k < 6 && !onDrift; k++) onDrift = driftB(x + Math.cos(k * 1.047) * len * 0.4, z + Math.sin(k * 1.047) * len * 0.4) > 0.19;
       if (onDrift) continue;
       strokes.add(0, x, height(x, z), z, len, rnd, tn, 0);
+    }
+  }
+
+  // ---------------------------------------------------------------- what has been added since
+  // Footprints and lying stones declared without a place in the composed sequence (src/layout.js). The meadow
+  // above was drawn as if they were not there; now what stands on them is taken away, and each gets its
+  // fringe (and apron) from a random sequence of its own, seeded by where it is. So adding, moving or
+  // removing one changes the turf at its own foot and nowhere else.
+  {
+    const ADDED = added(), newRocks = LAYOUT.lying.filter((r) => r?.[4]);
+    if (ADDED.length || newRocks.length) {
+      solids = [...SOLIDS, ...ADDED];
+      for (const r of newRocks) rockIn(r);
+      const onAdded = (x, z, keep) => {
+        for (const s of ADDED) {
+          if (x < s.bb[0] - keep || x > s.bb[1] + keep || z < s.bb[2] - keep || z > s.bb[3] + keep) continue;
+          if (s.d(x, z) < keep && (!s.solid || s.solid(x, z))) return true;
+        }
+        return false;
+      };
+      let cleared = 0;
+      // tall(rec, o): how high the card of an instance stands; keep: how far its root stays from a footprint
+      const clear = (field, tall, keep) => {
+        for (const L of field.layers) {
+          const src = L.rec, out = [];
+          for (let o = 0; o < src.length; o += STRIDE) {
+            const x = src[o], z = src[o + 2], bx = x + src[o + 10], bz = z + src[o + 11], h = tall(src, o);
+            if (onAdded(x, z, keep) || onAdded(bx, bz, keep) || (newRocks.length && (onRock(x, z, h) || onRock(bx, bz, h)))) { cleared++; continue; }
+            for (let k = 0; k < STRIDE; k++) out.push(src[o + k]);
+          }
+          L.rec = out;
+        }
+      };
+      clear(tufts, (r, o) => r[o + 3], 0.03);
+      clear(flowers, (r, o) => r[o + 6] + 0.05, 0.03);
+      clear(strokes, () => 0, 0.6);
+      const own = (x, z) => rng((Math.imul(Math.round(x * 100), 73856093) ^ Math.imul(Math.round(z * 100), 19349663)) >>> 0);
+      const n0 = tufts.count;
+      for (const s of ADDED) {
+        const RR = own((s.bb[0] + s.bb[1]) / 2, (s.bb[2] + s.bb[3]) / 2);
+        // (at the foot of a slender round thing - a sapling, a post - everything is smaller and thinner than
+        // at a full trunk: k = 1 from a foot of 0.4 m)
+        const k = s.c ? Math.min(1, Math.max(0.25, s.c[2] / 0.4)) : 1, sc = 0.5 + 0.5 * k;
+        if (s.fringe) fringe(s, RR, sc);
+        if (s.apron && s.c) apron(s, Math.round(170 * k * k), 1.3 * (0.4 + 0.6 * k), RR, sc);
+      }
+      for (const r of newRocks) stoneRing(r, own(+r[0], +r[1]));
+      console.info(`[grass] added since: ${ADDED.length} footprints, ${newRocks.length} stones; cleared ${cleared} instances off them, stood ${tufts.count - n0} tufts at their feet`);
     }
   }
 

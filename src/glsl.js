@@ -3,6 +3,7 @@
 //   oNormal xyz = world normal * .5 + .5,        a = line weight (0 = never draw lines here)
 //   oAux    r = view depth (m), g = shape id (0..1), b = plane id (depth layer), a = flags
 import * as THREE from 'three';
+import { SUBJECT } from './world.js';
 
 // uniforms shared by every material (single object instances, updated once per frame)
 export const G = {
@@ -64,6 +65,18 @@ float windGust(vec2 xz){
 float windAt(vec2 xz){ return uWindAmp * mix(${f(WIND.calm)}, 1.0, windGust(xz)); }
 `;
 
+// ---- the haze contract: atmosphere is laid in flat steps by distance from the hilltop (the camera never
+// leaves it), like the layers of a background painting. [from this distance (m), this much haze]. The ground
+// (src/terrain.js) and everything beyond the hill (src/extra/far.js) read the same table.
+export const HAZE = [[110, 0.12], [230, 0.24], [380, 0.36], [739, 0.48], [1049, 0.58]];
+export const HAZE_HOLD = +(typeof location !== 'undefined' && new URLSearchParams(location.search).get('hold') || 0.62);
+export const stepFog = (r) => { let a = 0; for (const [d, h] of HAZE) if (r >= d) a = h; return a; };
+export const STEP_FOG_GLSL = `float stepFog(float r){ return ${HAZE.map(([d, h], i) => `r < ${d.toFixed(1)} ? ${(i ? HAZE[i - 1][1] : 0).toFixed(2)} : `).join('')}${HAZE[HAZE.length - 1][1].toFixed(2)}; }`;
+// the subject of the picture (src/world.js SUBJECT), for every shader
+const SHARED_GLSL = /* glsl */`
+const vec3 SUBJECT = vec3(${f(SUBJECT.x)}, ${f(SUBJECT.y)}, ${f(SUBJECT.z)});
+`;
+
 export const HEAD = /* glsl */`
 precision highp float;
 precision highp int;
@@ -78,6 +91,7 @@ uniform float uTime;
 uniform vec3 uCamPos;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
+${SHARED_GLSL}
 float hash11(float p){ p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
 `;
 
@@ -97,6 +111,8 @@ uniform float uShadowTexel;
 uniform vec3 uHazeCol;
 uniform vec3 uHazeFarCol;
 uniform vec3 uShadowTint;
+${SHARED_GLSL}
+float aastep(float th, float v){ float w = max(fwidth(v), 1e-4); return smoothstep(th - w, th + w, v); }
 
 float hash11(float p){ p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
 float hash21(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
@@ -159,12 +175,16 @@ float toneStep(float v, float th, float noise, float amp){
   return smoothstep(-w, w, x);
 }
 
-// atmospheric perspective as a painter does it: one flat amount per depth plane
-// plus a lift toward the base of each plane (haze pooling in valleys).
+// atmospheric perspective as a painter does it: one flat amount per depth plane. The air is not laid
+// evenly over everything in the plane, though: that takes the contrast out of all of it alike and the far
+// country washes out. The lights go fully to the haze, the plane's darks (a wood's shadow body, the dark
+// under a hedge, a form shadow) keep part of their depth, so each plane still has its own boundary between
+// light and dark however pale it is. HAZE_HOLD = the share of the air a dark takes.
+const float HAZE_HOLD = ${f(HAZE_HOLD)};
 vec3 atmo(vec3 c, float amount){
   vec3 h = mix(uHazeCol, uHazeFarCol, smoothstep(0.3, 0.9, amount));
-  // haze desaturates & lifts darks more than lights
-  return mix(c, h, amount);
+  float l = dot(c, vec3(0.299, 0.587, 0.114));
+  return mix(c, h, amount * mix(HAZE_HOLD, 1.0, smoothstep(0.34, 0.62, l)));
 }
 
 void writeAux(vec3 n, float lineW, float depth, float id, float plane, float flags){

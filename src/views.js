@@ -88,4 +88,8 @@ export const VIEWS = {
   teleS: { pos: [-6, 2.0, 30], look: [-90, -16, 300], fov: 14 },
   drift: { pos: [-28, 1.7, 14], look: [-60, -8, 30], fov: 32 },
   driftE: { pos: [26, 1.7, 6], look: [60, -6, 12], fov: 32 },
+  // the feet of the rim trees and saplings
+  footLime: { pos: [31.5, -1.17, 10.5], look: [37.5, -4.61, 6.5], fov: 40 },
+  footElm: { pos: [-6, -1.58, -42.5], look: [-10, -5.21, -48], fov: 40 },
+  footSap: { pos: [-41, -1.98, -3], look: [-45.2, -4.65, -7], fov: 40 },
 };

@@ -7,7 +7,7 @@
 //   - a wooded ridge ring and three pale mountain ranges: one flat value each, one faint shadow wash
 // All cards are static and face the origin: nothing turns or slides when the camera moves.
 import * as THREE from 'three';
-import { mat } from '../glsl.js';
+import { mat, stepFog, STEP_FOG_GLSL } from '../glsl.js';
 import { rng, height, fbm, smooth, SUN } from '../world.js';
 import { GROUND_UNIFORMS } from '../terrain.js';
 import { makeCrownAtlas, makeVillageTex, makeCastleTex, ATLAS } from './far-tex.js';
@@ -18,8 +18,6 @@ const S2 = new THREE.Vector2(SUN.x, SUN.z).normalize();
 const sunAt = (a) => ({ sT: -Math.sin(a) * S2.x + Math.cos(a) * S2.y, f: -(Math.cos(a) * S2.x + Math.sin(a) * S2.y) });
 const annY = (r) => -31 + 4 * smooth(400, 520, r) + 22 * smooth(520, 1150, r);
 const groundY = (x, z) => { const r = Math.hypot(x, z); return r < 500 ? height(x, z) : annY(r); };
-// The haze contract shared with the terrain: flat steps by distance from the origin.
-const stepFog = (r) => (r < 110 ? 0 : r < 230 ? 0.12 : r < 380 ? 0.24 : r < 739 ? 0.36 : r < 1049 ? 0.48 : 0.58);
 // eye height of a viewer standing at the origin (the far landscape is composed for this eye)
 const EYE_Y = height(0, 0) + 1.7;
 const gauss = (R) => (R() + R() + R() + R() - 2) * 1.2;
@@ -28,9 +26,8 @@ const gauss = (R) => (R() + R() + R() + R() - 2) * 1.2;
 const RO = { crowns: 1, cards: 2, hills: 3, plain: 4, birds: 5, range: 6 };
 
 const COMMON = /* glsl */`
-float aastep(float th, float v){ float w = max(fwidth(v), 1e-4); return smoothstep(th - w, th + w, v); }
 float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x), mix(hash21(i + vec2(0.0, 1.0)), hash21(i + 1.0), f.x), f.y); }
-float stepFog(float r){ return r < 110.0 ? 0.0 : r < 230.0 ? 0.12 : r < 380.0 ? 0.24 : r < 739.0 ? 0.36 : r < 1049.0 ? 0.48 : 0.58; }
+${STEP_FOG_GLSL}
 // Ground mist at the feet of the far hills: ONE flat pale value with a quiet, hard, almost level upper
 // edge (a slow swell only - no lobes, no dabs, no second step). It is a function of the world position
 // only (azimuth from the hilltop and height), so the hill, the crowns standing in it and the plain all

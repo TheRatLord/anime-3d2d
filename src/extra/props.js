@@ -2,9 +2,47 @@
 // along the path and a few weathered fence posts.
 import * as THREE from 'three';
 import { Builder, wobble } from '../build.js';
-import { rng, height, fbm, PATH, SUN } from '../world.js';
+import { rng, height, fbm, vnoise, PATH, SUN, alongPath } from '../world.js';
+import { pathInfo } from '../terrain.js';
+import { disc, run, ground } from '../layout.js';
 import { stoneMaterial, stoneShadow, stonePrepass } from '../stone.js';
 import { ruinWarp, FALLEN, COLUMNS, ALTAR, CROSS } from '../ruin.js';
+
+// ---- the dry-stone wall: WALL.off metres east of the path centre line, from WALL.from metres along it. Its
+// top line sags and rises; in places the wall is down to a course or nothing.
+const WALL = { off: 2.6, from: 26, to: 80 };
+// [height of the top, how far fallen] at d metres along the path
+const wallProfile = (d) => {
+  const prof = 0.5 + Math.sin(d * 0.19 + 1.3) * 0.12 + Math.sin(d * 0.47) * 0.08 + (fbm(d * 0.35, 3.3, 2) - 0.5) * 0.25;
+  const fallen = fbm(d * 0.085 + 9, 1.7, 2);
+  return [fallen > 0.62 ? prof * Math.max(0, 1 - (fallen - 0.62) * 9) : prof, fallen];
+};
+// ---- the fence: posts every FENCE.step metres from FENCE.from along the path, one of them missing
+const FENCE = { from: 30, step: 2.6, n: 9, missing: 4, off: 2.3 };
+
+// ---- declared to the layout (src/layout.js), at module load
+{
+  // the wall as a run of segments; grass gathers only where it stands, in broken runs of 1-4 m
+  const segs = [];
+  let acc = 0;
+  for (let i = 0; i < PATH.length - 1; i++) {
+    const ax = PATH[i][0], az = PATH[i][1], bx = PATH[i + 1][0], bz = PATH[i + 1][1];
+    const L = Math.hypot(bx - ax, bz - az), dx = (bx - ax) / L, dz = (bz - az) / L;
+    const t0 = Math.max(0, (WALL.from - acc) / L);
+    if (t0 < 1) segs.push([ax + dx * L * t0 + dz * WALL.off, az + dz * L * t0 - dx * WALL.off, bx + dz * WALL.off, bz - dx * WALL.off]);
+    acc += L;
+  }
+  ground(run(segs, 0.27), {
+    seq: 200,
+    gate: (x, z) => { const s = pathInfo(x, z).s; return wallProfile(s)[0] > 0.14 && vnoise(s / 1.7 + 31.7, 5.5) > 0.44; },
+    solid: (x, z) => wallProfile(pathInfo(x, z).s)[0] > 0.05,
+  });
+  for (let i = 0; i < FENCE.n; i++) {
+    if (i === FENCE.missing) continue;
+    const [px, pz, dx, dz] = alongPath(FENCE.from + i * FENCE.step);
+    ground(disc(px - dz * FENCE.off, pz + dx * FENCE.off, 0.09), { seq: 201 + i });
+  }
+}
 
 export default function (scene) {
   const R = rng(777);
@@ -260,9 +298,7 @@ export default function (scene) {
         s += step;
         if (d < from || d > to) continue;
         // the top line sags and rises; in places the wall is down to a course or nothing
-        const prof = 0.5 + Math.sin(d * 0.19 + 1.3) * 0.12 + Math.sin(d * 0.47) * 0.08 + (fbm(d * 0.35, 3.3, 2) - 0.5) * 0.25;
-        const fallen = fbm(d * 0.085 + 9, 1.7, 2);
-        const hTop = fallen > 0.62 ? prof * Math.max(0, 1 - (fallen - 0.62) * 9) : prof;
+        const [hTop, fallen] = wallProfile(d);
         const px = ax + dx * (s - step / 2) - dz * side * off, pz = az + dz * (s - step / 2) + dx * side * off;
         const g = height(px, pz);
         // one element per 6 m run of wall (centre = the middle of the run)
@@ -289,7 +325,7 @@ export default function (scene) {
       acc += L;
     }
   };
-  wallAlong(PATH, -1, 2.6, 26, 80);
+  wallAlong(PATH, -1, WALL.off, WALL.from, WALL.to);
   const prunedDry = dw.prune();
   const dry = new THREE.Mesh(dw.geometry(), stoneMaterial({ lit: 0xdcdac9, mossAmt: 0.45, joint: 0.5, foot: 0.25 }));
   dry.userData.pruned = prunedDry;
@@ -309,17 +345,10 @@ export default function (scene) {
   // ---- old fence posts with a sagging rail, west of the path lower down
   const w = new Builder();
   const posts = [];
-  for (let i = 0; i < 9; i++) {
-    const t = 30 + i * 2.6;
-    // walk along the path polyline by distance
-    let acc = 0, px = 0, pz = 0, dx = 0, dz = 1;
-    for (let k = 0; k < PATH.length - 1; k++) {
-      const L = Math.hypot(PATH[k + 1][0] - PATH[k][0], PATH[k + 1][1] - PATH[k][1]);
-      if (acc + L >= t || k === PATH.length - 2) { const f = (t - acc) / L; dx = (PATH[k + 1][0] - PATH[k][0]) / L; dz = (PATH[k + 1][1] - PATH[k][1]) / L; px = PATH[k][0] + dx * L * f; pz = PATH[k][1] + dz * L * f; break; }
-      acc += L;
-    }
-    const x = px + dz * 2.3, z = pz - dx * 2.3, g = height(x, z);
-    if (i === 4) { posts.push(null); continue; }           // one post missing
+  for (let i = 0; i < FENCE.n; i++) {
+    const [px, pz, dx, dz] = alongPath(FENCE.from + i * FENCE.step);
+    const x = px + dz * FENCE.off, z = pz - dx * FENCE.off, g = height(x, z);
+    if (i === FENCE.missing) { posts.push(null); continue; }           // one post missing
     const h = 1.0 + R() * 0.25;
     w.setElem(x, g + 0.5, z);
     w.block(x, g + h / 2 - 0.1, z, 0.13, h, 0.13, { tone: R(), skew: wobble(R, 0.25), rot: new THREE.Euler((R() - 0.5) * 0.16, R() * 3, (R() - 0.5) * 0.16), line: 1 });

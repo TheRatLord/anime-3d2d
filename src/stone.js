@@ -26,8 +26,7 @@ void main(){
   // buttress, a heap) gets ONE number from its depth order as seen from here: 0 = foreground plane,
   // 1 = back plane. It is computed from the element's centre, so it is flat over the element (no
   // gradient along a receding wall) and it slides smoothly as the camera walks.
-  vec3 CH = vec3(0.0, 4.0, -1.0);
-  float dC = distance(uCamPos, CH);
+  float dC = distance(uCamPos, SUBJECT);
   float nearD = max(dC - 12.0, 1.5), farD = dC + 12.0;
   vec3 ec = (modelMatrix * vec4(aElem.xyz, 1.0)).xyz;
   float pl = planeOf(distance(uCamPos, ec), nearD, farD);

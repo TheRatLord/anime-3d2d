@@ -2,7 +2,8 @@
 // and the stones along them are knocked loose, so no silhouette is a staircase of big boxes.
 import * as THREE from 'three';
 import { Builder, wobble, cutCorner, rockCuts } from './build.js';
-import { rng, fbm, vnoise, smooth, height, SLABS } from './world.js';
+import { rng, fbm, vnoise, smooth, height, SLABS, FLOOR } from './world.js';
+import { LAYOUT, box, disc, ground } from './layout.js';
 import { stoneMaterial, stoneShadow, stonePrepass } from './stone.js';
 
 const R = rng(4242);
@@ -33,7 +34,7 @@ export function ruinWarp(v) {
 // stones lying about (for anything that wants to keep clear of them): [x, z, radius]
 // Each entry is [x, z, radius, topY]; covers the rubble heaps and their small debris (filled by
 // buildRuin), the fallen column drums and the broken pieces beside them, the altar and the cross.
-export const ROCKS = [];
+export const ROCKS = LAYOUT.lying;
 
 // Fallen column drums in the nave (built by extra/props.js). The layout lives here so the
 // footprints exist before any other module runs. frags = [x, z, size] of the pieces beside each.
@@ -55,7 +56,7 @@ ROCKS.push([-1.55, -5.65, 0.17, height(-1.55, -5.65) + 0.2], [-3.6, 14.6, 0.12, 
 
 // ---------------------------------------------------------------------------------------------
 // Layout of everything that stands (known at module load, before anything is built).
-const ZB = -9, ZF = 7, XW = -5, XE = 5;
+const ZB = FLOOR.z0, ZF = FLOOR.z1, XW = FLOOR.x0, XE = FLOOR.x1;
 const HT = 0.425;                                             // half thickness of the side walls
 // ---- back facade: a broken gable, tall toward the west, bitten away in a long curve to the east.
 // It runs the full width, out to the outer faces of the side walls (s = 0 at x = XW - HT).
@@ -186,6 +187,28 @@ export const SOLIDS = (() => {
   }
   return out.map((c) => c.map((v) => Math.round(v * 1000) / 1000));
 })();
+
+// ---- declared to the layout (src/layout.js), at module load
+LAYOUT.stand.push(...SOLIDS);
+// the low east wall is a knee-high footing: not to be walked through. Circles of the same size and
+// spacing as the rest of that wall (so the face stays even), only where the row above left them out
+for (let z = 1.22; z < 7; z += 0.695) if (!SOLIDS.some((r) => Math.abs(r[0] - XE) < 0.1 && Math.abs(r[1] - z) < 0.35)) LAYOUT.stand.push([XE, z, 0.56]);
+// the faces the lens keeps clear of: the two side walls (to a little past the door) and the back facade
+LAYOUT.walls.push([XW, ZB, XW, ZF + 0.6, 0.6], [XE, ZB, XE, ZF + 0.6, 0.6], [XW - 0.6, ZB, XE + 0.6, ZB, 0.6]);
+// plan shapes on the turf, as the grass keeps off them and gathers at their foot (seq: the meadow was
+// composed around these, in this order - see ground() in src/layout.js)
+[
+  box(XW, (ZB + ZF) / 2, HT + 0.005, (ZF - ZB) / 2), box(XE, (ZB + ZF) / 2, HT + 0.005, (ZF - ZB) / 2),   // nave walls (the east one is low stubs)
+  box(0, ZB, 5.5, 0.52),                                                                                   // back facade
+  box(-5.15, -8.9, 0.76, 0.82), box(5.15, -8.9, 0.76, 0.82),                                               // corner buttresses
+  box(-5.55, -3.1, 0.47, 0.52), box(-5.55, 1.5, 0.47, 0.52), box(5.55, -3.1, 0.47, 0.52),
+  box(XW, 7.2, 0.66, 0.66), box(XE, 7.2, 0.66, 0.66),                                                      // door piers
+  ...COLUMNS.map(([x, z]) => box(x, z, 0.63, 0.63)),
+  box(ALTAR[0], ALTAR[1], 1.46, 0.86),
+  box(CROSS[0], CROSS[1], 0.76, 0.76),                                                                     // wayside cross
+  box(0, 8.55, 2.5, 1.0),                                                                                  // door steps
+  ...FALLEN.map((f) => disc(f.x, f.z, 0.46)),                                                              // fallen drums
+].forEach((s, i) => ground(s, { seq: i }));
 
 
 // The break line of a ruined wall, drawn the way a painter draws it: ONE continuous torn line. It

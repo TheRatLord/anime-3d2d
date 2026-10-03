@@ -1,8 +1,8 @@
 // The hill. Ground colour is a shared GLSL function so grass tufts can take the exact
 // colour of the ground under them.
 import * as THREE from 'three';
-import { mat, shadowMat, WIND_GLSL } from './glsl.js';
-import { height, PATH, rng, SUN, vnoise } from './world.js';
+import { mat, shadowMat, WIND_GLSL, HAZE } from './glsl.js';
+import { height, PATH, PATH_LEN, rng, SUN, vnoise, SUBJECT, floorRect } from './world.js';
 
 // ---- meadow map: a small tileable noise texture (1 texel = 1 m, period 256 m) that both the
 // shaders and the CPU scatter code (src/extra/grass.js) can read, so flower drifts in the wash,
@@ -70,7 +70,6 @@ export function pathInfo(x, z) {
   }
   return { d: best, s, side };
 }
-const PATH_LEN = PATH.slice(1).reduce((a, p, i) => a + Math.hypot(p[0] - PATH[i][0], p[1] - PATH[i][1]), 0);
 const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 // edge > 0: grass beside the path; strip > 0: inside the central grass strip (brush-noise jitter excluded)
 export function pathEdge(x, z) {
@@ -307,7 +306,7 @@ const RAD = Math.PI / 180;
     [-63.0, 31.0, 6.0, 1.8, 0], [-72.0, 39.0, 8.0, 2.4, 2], [-58.0, 38.0, 3.5, 1.3, 1], [-80.0, 33.0, 5.0, 2.0, 4],     // the far slope west (drift)
     [-50.0, 56.0, 6.0, 2.0, 4], [-56.0, 66.0, 8.0, 2.6, 0], [-44.0, 62.0, 3.5, 1.3, 1],                                 // and south-west (rimdown)
     [-32.0, 28.2, 1.6, 0.6, 4], [-34.8, 30.8, 2.0, 0.7, 2], [-30.6, 31.6, 1.0, 0.5, 1],           // rimdown
-  ]) { const r = Math.hypot(x, z + 1); ARCS.push([r, Math.atan2(z + 1, x) / RAD, len / r / RAD, hd, 0.66, pal, 0]); }
+  ]) { const r = Math.hypot(x - SUBJECT.x, z - SUBJECT.z); ARCS.push([r, Math.atan2(z - SUBJECT.z, x - SUBJECT.x) / RAD, len / r / RAD, hd, 0.66, pal, 0]); }
 }
 const ARC_WARP = 4.0, ARC_WS = 0.8, ARC_WOX = 17, ARC_WOZ = 9, ARC_MIN = 0.14, NOISE_IN = 34, NOISE_OUT = 50, NOISE_DROP = 0.30, NOISE_K = 0.0;
 const GAP_S = 3.2, GAP_OX = 7, GAP_OZ = 83;
@@ -334,8 +333,8 @@ const arcOrder = new Map(ARCS.map((arc, i) => [arc, i]));
 // third of it, or they would be torn to shreds)
 function arcField(x0, z0, wx, wz) {
   const x = x0 + wx, z = z0 + wz, xs = x0 + wx * 0.3, zs = z0 + wz * 0.3;
-  const rw = Math.hypot(x, z + 1) + (meadowAt(x * ARC_WS + ARC_WOX, z * ARC_WS + ARC_WOZ)[3] - 0.5) * ARC_WARP;
-  const a = Math.atan2(z + 1, x), rs = Math.hypot(xs, zs + 1), as = Math.atan2(zs + 1, xs);
+  const rw = Math.hypot(x - SUBJECT.x, z - SUBJECT.z) + (meadowAt(x * ARC_WS + ARC_WOX, z * ARC_WS + ARC_WOZ)[3] - 0.5) * ARC_WARP;
+  const a = Math.atan2(z - SUBJECT.z, x - SUBJECT.x), rs = Math.hypot(xs - SUBJECT.x, zs - SUBJECT.z), as = Math.atan2(zs - SUBJECT.z, xs - SUBJECT.x);
   const gm = meadowAt(x * GAP_S + GAP_OX, z * GAP_S + GAP_OZ);
   const gap = sstep(0.28, 0.44, gm[3]), wid = 0.45 + 1.15 * gm[2];
   const o = [0, 0, 0, -1];
@@ -356,7 +355,7 @@ function arcField(x0, z0, wx, wz) {
     o[palCh(A[5])] += w;
     if (w > bw) { bw = w; o[3] = A[5]; }
   }
-  const wr = rw - Math.hypot(x, z + 1);                       // the push of the slow warp (m), shared with the bands
+  const wr = rw - Math.hypot(x - SUBJECT.x, z - SUBJECT.z);                       // the push of the slow warp (m), shared with the bands
   for (const B of BLOBS) {
     const dx = x - B[0], dz = z - B[1];
     if (Math.abs(dx) + Math.abs(dz) > 2.6 * (B[2] + B[3])) continue;
@@ -402,9 +401,9 @@ function driftRaw(x, z) {
   const m = meadowAt(x * DRIFT_SCALE, z * DRIFT_SCALE), e = meadowAt(x * EDGE_SCALE + EDGE_OX, z * EDGE_SCALE + EDGE_OZ);
   const o = [m[0] + (e[0] - 0.5) * EDGE_AMP, m[1] + (e[1] - 0.5) * EDGE_AMP, m[2] + (e[2] - 0.5) * EDGE_AMP, -1];
   // (near the chapel the noise only tears the rim of the planned bands)
-  const g = sstep(NOISE_IN, NOISE_OUT, Math.hypot(x, z + 1));
+  const g = sstep(NOISE_IN, NOISE_OUT, Math.hypot(x - SUBJECT.x, z - SUBJECT.z));
   // (and nowhere does it sink far below the level the planned drifts are set on: a low stretch of the noise would swallow them)
-  const r1 = Math.hypot(x, z + 1), ft = FOOT * sstep(FOOT_IN, FOOT_OUT, r1);
+  const r1 = Math.hypot(x - SUBJECT.x, z - SUBJECT.z), ft = FOOT * sstep(FOOT_IN, FOOT_OUT, r1);
   for (let k = 0; k < 3; k++) o[k] = Math.max(DRIFT_T[k] - NOISE_DROP - 0.06, (DRIFT_T[k] - NOISE_DROP + (o[k] - 0.5) * NOISE_K) * (1 - g) + (o[k] + ft) * g);
   const p = planAt(x, z);
   for (let k = 0; k < 3; k++) o[k] += p[k];
@@ -442,7 +441,7 @@ const HUE_Q = (() => {
   v.sort((a, b) => a - b);
   return HUE_SHARE.map((s) => v[Math.floor(v.length * s)]);
 })();
-const ringPal = (x, z) => { const n = PALS.length; return ((Math.floor(Math.hypot(x, z + 1) / 7 + (meadowAt(x * 1.3 + 91, z * 1.3 + 53)[3] - 0.5) * 2.0) % n) + n) % n; };
+const ringPal = (x, z) => { const n = PALS.length; return ((Math.floor(Math.hypot(x - SUBJECT.x, z - SUBJECT.z) / 7 + (meadowAt(x * 1.3 + 91, z * 1.3 + 53)[3] - 0.5) * 2.0) % n) + n) % n; };
 //   returns a flower colour index: 0 white, 1 yellow, 3 magenta, 4 orange
 export function flowerFam(x, z, jit = 0) {
   const pl = planAt(x, z)[3], pal = pl >= 0 ? pl : ringPal(x, z);
@@ -579,6 +578,14 @@ float shadePatch(vec2 p){ return texture(uBrush, p * vec2(1.0 / 9.0, 1.0 / 3.6) 
 `;
 
 // groundPaint(): lit local colour of the ground at a world position (fragment shaders only).
+// (nothing reads the path further than PATH_REACH from it: outside this box it is not looked up at all)
+const PATH_REACH = 6.5;
+const PATH_BOX = [Math.min(...PATH.map((p) => p[0])) - PATH_REACH, Math.max(...PATH.map((p) => p[0])) + PATH_REACH, Math.min(...PATH.map((p) => p[1])) - PATH_REACH, Math.max(...PATH.map((p) => p[1])) + PATH_REACH];
+// inside(rect, p): 1 inside [x0, x1, z0, z1]
+const rectGLSL = (r, p) => `(step(${r[0].toFixed(2)}, ${p}.x) * step(${p}.x, ${r[1].toFixed(2)}) * step(${r[2].toFixed(2)}, ${p}.y) * step(${p}.y, ${r[3].toFixed(2)}))`;
+// the floor of the building (src/world.js FLOOR): no dirt of the path shows through its gaps, and no drift
+// grows through it or hard against its walls
+const FLOOR_DIRT = floorRect(0, 0.7), FLOOR_BLOOM = floorRect(0.6, 0.6, 0.8);
 export const GROUND_GLSL = /* glsl */`
 uniform vec2 uPath[${PATH.length}];
 uniform sampler2D uMeadow;
@@ -586,7 +593,7 @@ uniform sampler2D uContact;
 uniform sampler2D uSlope;
 // x: distance to the path centre line, y: arc length along it, z: side (+1/-1)
 vec3 pathInfo(vec2 p){
-  if (abs(p.x - 6.0) > 13.0 || p.y < 2.0 || p.y > 64.0) return vec3(1e3, 0.0, 1.0);
+  if (${rectGLSL(PATH_BOX, 'p')} < 0.5) return vec3(1e3, 0.0, 1.0);
   float best = 1e9, s = 0.0, acc = 0.0, side = 1.0;
   for (int i = 0; i < ${PATH.length - 1}; i++){
     vec2 a = uPath[i], b = uPath[i+1];
@@ -662,7 +669,7 @@ vec3 groundPaint(vec3 wp, out float grass){
   vec3 pi = pathInfo(wp.xz);
   grass = 1.0;
   // (no dirt showing through the gaps of the nave floor)
-  if (pi.x > 3.0 || (wp.y > -90.0 && wp.z < 7.7 && abs(wp.x) < 5.0)) return g;
+  if (pi.x > 3.0 || ${rectGLSL(FLOOR_DIRT, 'wp.xz')} > 0.5) return g;
   float jit = texture(uBrush, wp.xz / 2.3 + 0.7).r - 0.5;
   float wob = texture(uMeadow, (wp.xz * 4.0 + 0.5) / 256.0).a - 0.5;
   float taper = 1.0 - 0.45 * smoothstep(0.72, 1.0, pi.y / ${PATH_LEN.toFixed(3)});
@@ -776,14 +783,13 @@ uniform sampler2D uFarTex;
 const vec3 FIELD_G = vec3(0.818, 0.897, 0.710);
 const vec3 FIELD_Y = vec3(0.859, 0.910, 0.648);
 const vec3 FIELD_T = vec3(0.553, 0.702, 0.604);   // #8DB39A hedge / tree line
-float aastep(float th, float v){ float w = max(fwidth(v), 1e-4); return smoothstep(th - w, th + w, v); }
 // the planned drifts, baked (see PLAN in the module): rgb = what they add to the three colour fields, a = palette
 uniform sampler2D uPlan;
 uniform float uWindAmp;
 // hue: the family of a dab from the palette of its drift and a world noise read at the dab's own place
 const float PAL_FAM[${PALS.length * 4}] = float[${PALS.length * 4}](${PALS.flat().map((v) => v.toFixed(1)).join(', ')});
 float ringPal(vec2 p){
-  return mod(floor(length(p + vec2(0.0, 1.0)) / 7.0 + (textureLod(uMeadow, (p * 1.3 + vec2(91.0, 53.0) + 0.5) / 256.0, 0.0).a - 0.5) * 2.0), ${PALS.length}.0);
+  return mod(floor(length(p - SUBJECT.xz) / 7.0 + (textureLod(uMeadow, (p * 1.3 + vec2(91.0, 53.0) + 0.5) / 256.0, 0.0).a - 0.5) * 2.0), ${PALS.length}.0);
 }
 float famAt(vec2 p, float pal, float jit){
   float n = textureLod(uMeadow, (p * ${HUE_S.toFixed(1)} + vec2(${HUE_OX.toFixed(1)}, ${HUE_OZ.toFixed(1)}) + 0.5) / 256.0, 0.0).a + jit;
@@ -971,7 +977,7 @@ void main(){
   // ---- depth planes, baked by distance from the hilltop: three firm, brush-warped rings
   vec4 pn = texture(uBrush, vW.xz / 173.0 + 0.21);
   float rw = rr * (1.0 + (pn.a - 0.5) * 0.24 + (pn.g - 0.5) * 0.06);
-  float p1 = aastep(110.0, rw), p2 = aastep(230.0, rw), p3 = aastep(380.0, rw);
+  float p1 = aastep(${HAZE[0][0].toFixed(1)}, rw), p2 = aastep(${HAZE[1][0].toFixed(1)}, rw), p3 = aastep(${HAZE[2][0].toFixed(1)}, rw);
 
   vec3 c = vec3(0.0);
   if (p1 < 0.999){
@@ -1083,7 +1089,7 @@ void main(){
       // Within ~${NOISE_IN} m of the chapel the meadow is composed by hand (the baked plan) and the noise field is off:
       // it is read only further out. (At a level set by the distance alone: the mip chosen for a grazing view is
       // flat grey, and the drifts of the far slopes would thin away to nothing.)
-      float r1 = length(vW.xz + vec2(0.0, 1.0)), famP = -1.0;
+      float r1 = length(vW.xz - SUBJECT.xz), famP = -1.0;
       float nz = smoothstep(${NOISE_IN.toFixed(1)}, ${NOISE_OUT.toFixed(1)}, r1);
       vec3 md = vec3(${DRIFT_T.map((t) => (t - NOISE_DROP).toFixed(4)).join(', ')});
       if (nz > 0.0){
@@ -1103,7 +1109,7 @@ void main(){
       D.z *= 0.8;
       float Dm = max(D.x, max(D.y, D.z));
       // nothing grows through the nave floor
-      float nave = 1.0 - step(abs(vW.x), 5.6) * step(-9.6, vW.z) * step(vW.z, 7.8);
+      float nave = 1.0 - ${rectGLSL(FLOOR_BLOOM, 'vW.xz')};
       float gate = grass * (1.0 - cm) * nave;
       if (Dm * gate > 0.004){
         float m2 = texture(uMeadow, (vW.xz * 0.9 + vec2(40.0, 17.0) + 0.5) / 256.0).a;
@@ -1175,8 +1181,8 @@ void main(){
   // ---- beyond the first ring the home meadow gives way to the valley floor
   if (p1 > 0.001) c = mix(c, valleyBands(farPaint(vW, max(rr, 60.0), pn), vW, max(rr, 60.0), rw), p1);
 
-  // stepped haze: 0 / 0.12 / 0.24 / 0.36 toward uHazeCol
-  c = mix(c, uHazeCol, 0.12 * (p1 + p2 + p3));
+  // stepped haze (the shared table, src/glsl.js HAZE) toward uHazeCol
+  c = mix(c, uHazeCol, ${HAZE[0][1].toFixed(4)} * p1 + ${(HAZE[1][1] - HAZE[0][1]).toFixed(4)} * p2 + ${(HAZE[2][1] - HAZE[1][1]).toFixed(4)} * p3);
 
   oColor = vec4(c, 1.0);
   writeAux(n, 0.0, vDepth, 0.011, 0.0, 0.0);

@@ -14,7 +14,7 @@ const p = await b.newPage({ viewport: { width: W, height: H }, deviceScaleFactor
 const errs = [];
 p.on('console', m => { if (m.type() === 'error' || m.type() === 'warning') errs.push(m.text()); });
 p.on('pageerror', e => errs.push('PAGEERROR ' + e.message));
-await p.goto(srv.url + '?hud=0&' + (flags.q || ''));
+await p.goto(srv.url + `?hud=0&t=${+(flags.t || 3)}&` + (flags.q || ''));   // (the clock stands still from the first frame)
 try { await p.waitForFunction(() => window.__app && window.__app.stat.frames > 3, null, { timeout: 30000 }); }
 catch (e) { console.log('LOAD FAILED'); console.log(errs.join('\n')); await b.close();
 await srv.close(); process.exit(1); }

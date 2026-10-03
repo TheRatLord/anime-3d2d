@@ -1,7 +1,9 @@
 // Render pipeline: sun shadow depth -> scene (3 targets) -> paint filter -> ink & depth composite
 // -> diffusion bloom -> grade/grain.
 import * as THREE from 'three';
-import { G, HEAD } from './glsl.js';
+import { G, HEAD, WIND } from './glsl.js';
+import { SUBJECT } from './world.js';
+const v1 = (x) => (+x).toFixed(3);
 
 const FS_VS = HEAD + /* glsl */`
 in vec3 position;
@@ -13,6 +15,7 @@ void main(){ vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0,
 const _q = new URLSearchParams(globalThis.location?.search ?? '');
 const CSHADOW = _q.has('cshadow') ? Math.max(0, Math.min(2, parseFloat(_q.get('cshadow')) || 0)) : 1;
 const CSHADOW_DBG = parseInt(_q.get('cshadowdbg') ?? '0') || 0;
+const DBG = parseInt(_q.get('dbg') ?? '0') || 0;   // 1 = the describe field
 
 function pass(fs, uniforms) {
   return new THREE.RawShaderMaterial({
@@ -25,11 +28,49 @@ function pass(fs, uniforms) {
   });
 }
 
+// ---- where things are drawn and where they are left as a mass.
+// A painted background does not describe everything: most of a meadow, a crown or a bank is a quiet mass,
+// and single blades, petals and leaves are drawn only (a) where a mass ends against something well behind it
+// (its silhouette), (b) in a few accents, patches fixed to the ground, and (c) on what is built, which is
+// the drawing of the picture. describe() is that decision for a pixel, 1 = drawn, 0 = left quiet. It is taken
+// from the finished picture's depth and flags alone, so whatever is added to the scene falls under it.
+const QUIET = { dab: 0.05, max: 3.4, patch: 11.0, share: [0.53, 0.60], focal: [9.0, 26.0, 0.07], edge: [1.12, 1.45], ring: 9.0 };
+const DESCRIBE_GLSL = /* glsl */`
+const vec3 SUBJECT = vec3(${v1(SUBJECT.x)}, ${v1(SUBJECT.y)}, ${v1(SUBJECT.z)});
+const float QUIET_DAB = ${v1(QUIET.dab)};      // breadth of a dab in a quiet mass, m on the thing itself
+const float QUIET_MAX = ${v1(QUIET.max)};      // ... but never more than this many times the usual dab
+float describe(vec2 uv){
+  vec4 ax = texture(tAux, uv);
+  float d = ax.r;
+  if (d > 5000.0) return 1.0;
+  // (c) built things
+  float D = step(0.5, ax.a);
+  // (a) the rim of a mass: something clearly farther lies within a few pixels
+  float far = d;
+  for (int k = 0; k < 8; k++){
+    float a = float(k) * 0.7854;
+    far = max(far, texture(tAux, uv + vec2(cos(a), sin(a)) * ${v1(QUIET.ring)} * uRadius / 3.0 * uTexel).r);
+  }
+  D = max(D, smoothstep(${v1(QUIET.edge[0])}, ${v1(QUIET.edge[1])}, far / d));
+  // (b) accents, fixed to the world
+  vec3 ray = vec3((uv * 2. - 1. + vec2(0.0, uLensShift)) * uTanHalf, -1.0);
+  vec3 wp = (uInvView * vec4(ray * d, 1.0)).xyz;
+  vec2 q = (wp.xz + wp.y * vec2(0.37, 0.21)) / ${v1(QUIET.patch)};
+  float n = texture(tBrush, q).a * 0.7 + texture(tBrush, q * 2.3 + 0.41).a * 0.3;
+  // (more of them round the subject of the picture, where the eye is meant to rest)
+  n += ${v1(QUIET.focal[2])} * (1.0 - smoothstep(${v1(QUIET.focal[0])}, ${v1(QUIET.focal[1])}, distance(wp.xz, SUBJECT.xz)));
+  D = max(D, smoothstep(${v1(QUIET.share[0])}, ${v1(QUIET.share[1])}, n));
+  return D;
+}
+`;
+
 // ---- 1. paint filter: 4-sector Kuwahara. Flattens small detail into dabs, rounds corners,
 // keeps edges hard. Per-pixel strength comes from colour alpha.
 const KUWAHARA_FS = /* glsl */`
 in vec2 vUv; out vec4 o;
-uniform sampler2D tColor, tAux; uniform vec2 uTexel; uniform float uRadius;
+uniform sampler2D tColor, tAux, tBrush; uniform vec2 uTexel; uniform float uRadius;
+uniform mat4 uInvView; uniform vec2 uTanHalf; uniform float uLensShift, uPixelK, uQuiet; uniform int uDbg;
+${DESCRIBE_GLSL}
 // Generalised Kuwahara with 8 smooth sectors and polynomial weights (after Kyprianidis).
 // Each pixel takes the mean of whichever surrounding sector is the most uniform, which turns
 // fine detail into flat dabs with crisp borders - gouache, in other words.
@@ -37,7 +78,13 @@ void main(){
   vec4 c0 = texture(tColor, vUv);
   if (uRadius < 0.5 || texture(tAux, vUv).r > 5000.0) { o = c0; return; }   // sky needs no filtering
   const int R = 3;                       // fixed 7x7 tap grid, spread over the radius (bilinear taps)
-  float stepPx = uRadius / 3.0;
+  // where the picture is left as a quiet mass the dabs are broader (a fixed size on the thing itself, so
+  // only what is near loses its small drawing); a tap then reads the mip that matches its spacing
+  float quiet = uQuiet > 0.0 ? 1.0 - describe(vUv) : 0.0;
+  if (uDbg == 1) { o = vec4(vec3(1.0 - quiet), 1.0); return; }
+  float rad = uRadius * mix(1.0, clamp(QUIET_DAB / (texture(tAux, vUv).r * uPixelK * uRadius), 1.0, QUIET_MAX), quiet * min(uQuiet, 1.0));
+  float stepPx = rad / 3.0;
+  float lod = max(0.0, log2(stepPx) - 1.0);
   float zeta = 2.0 / 3.0;
   const float zc = 0.58;
   float eta = (zeta + cos(zc)) / (sin(zc) * sin(zc));
@@ -46,7 +93,7 @@ void main(){
   for (int j = -R; j <= R; j++) for (int i = -R; i <= R; i++){
     vec2 v = vec2(float(i), float(j)) / 3.0;
     if (dot(v, v) > 1.0) continue;
-    vec3 c = texture(tColor, vUv + vec2(float(i), float(j)) * stepPx * uTexel).rgb;
+    vec3 c = textureLod(tColor, vUv + vec2(float(i), float(j)) * stepPx * uTexel, lod).rgb;
     float w[8]; float sum = 0.0; float z, vxx, vyy;
     vxx = zeta - eta * v.x * v.x; vyy = zeta - eta * v.y * v.y;
     z = max(0.0,  v.y + vxx); w[0] = z * z; sum += w[0];
@@ -77,11 +124,34 @@ void main(){
 }
 `;
 
+// ---- the boundaries that survive in the distance.
+// Haze and a high key flatten the far country; what keeps it from washing out is a few firm boundaries
+// between its planes, and they are found here from the depth of the finished picture (compared with the
+// depth of what lies around), so that whatever stands out there takes part:
+//  - MIST: where farther land shows in a pocket between or behind nearer masses (the far hill between two
+//    woods, the plain behind a hedge) it takes ONE flat step paler, the shape cut with a brushed, hard edge
+//    like the mist at the feet of the hills (src/extra/far.js);
+//  - CREST: a far ridge that ends against the sky or against much farther land is painted deeper toward its
+//    top edge and left to die away below it, the way a range is laid in poster colour.
+// Both come and go in long stretches fixed to the land (lost and found). Only what lies beyond the hilltop
+// takes part, so nothing near throws a halo on the country behind it.
+const COUNTER = { from: [55, 95], sky: 12.6, mist: 0.30, pale: 0.30, crest: [0.12, 0.9], crestFrom: [260, 520], deep: 1.0 };
 // ---- 2. blurred log-depth (quarter res) for the depth halo
 const DEPTH_DOWN_FS = /* glsl */`
 in vec2 vUv; out vec4 o;
 uniform sampler2D tAux;
-void main(){ float d = texture(tAux, vUv).r; o = vec4(min(log2(max(d, 0.1)), 11.0), 0., 0., 1.); }
+uniform vec2 uTexel;
+// log depth of the country beyond the hilltop, weighted so that the blur leaves the foreground out
+// (r = depth x weight, g = weight): a near tree throws no halo on the land behind it
+void main(){
+  vec2 acc = vec2(0.0);
+  for (int k = 0; k < 4; k++){
+    float d = texture(tAux, vUv + vec2(k < 2 ? -1.0 : 1.0, (k & 1) == 0 ? -1.0 : 1.0) * uTexel).r;
+    float w = smoothstep(${v1(COUNTER.from[0])}, ${v1(COUNTER.from[1])}, d);
+    acc += vec2(min(log2(max(d, 0.1)), ${v1(COUNTER.sky)}) * w, w);
+  }
+  o = vec4(acc * 0.25, 0., 1.);
+}
 `;
 const BLUR_FS = /* glsl */`
 in vec2 vUv; out vec4 o;
@@ -99,7 +169,7 @@ const COMPOSITE_FS = /* glsl */`
 in vec2 vUv; out vec4 o;
 uniform sampler2D tColor, tNormal, tAux, tDepthBlur, tBrush;
 uniform vec2 uTexel; uniform vec3 uHazeCol; uniform vec3 uSunDir;
-uniform float uLine, uHalo, uEdgeLight, uWobble;
+uniform float uLine, uCounter, uEdgeLight, uWobble;
 uniform mat4 uInvView; uniform vec2 uTanHalf; uniform float uLensShift;
 uniform float uTime, uPixelK, uCloud; uniform int uCloudDbg;
 
@@ -110,9 +180,10 @@ uniform float uTime, uPixelK, uCloud; uniform int uCloudDbg;
 const float CS_ALT = 1100.0;                      // cloud base above the hilltop datum, m
 const float CS_CELL = 430.0;                      // one cloud (or none) per cell of this size, m
 const float CS_FILL = 0.45;                       // share of cells that hold a cloud
-const vec2  CS_WIND = vec2(0.924, -0.383);        // toward east-north-east (x east, -z north)
-const float CS_SPEED = 4.0;                       // m/s
-const float CS_LANE = 130.0;                      // half-width of the sunnier lane through the chapel, m
+const vec2  CS_WIND = vec2(${v1(WIND.dir[0])}, ${v1(WIND.dir[1])});        // the one wind of the scene (src/glsl.js WIND)
+const float CS_SPEED = ${v1(WIND.speed)};                       // m/s
+const float CS_LANE = 130.0;                      // half-width of the sunnier lane through the subject, m
+const vec3 SUBJECT = vec3(${v1(SUBJECT.x)}, ${v1(SUBJECT.y)}, ${v1(SUBJECT.z)});
 vec4 csHash(vec2 p){ vec4 q = fract(vec4(p.xyxy) * vec4(.1031, .1030, .0973, .1099)); q += dot(q, q.wzxy + 33.33); return fract((q.xxyz + q.yzzw) * q.zywx); }
 // > 0 inside a shadow. q = position in the cloud frame (m), lane = distance across the wind from the chapel's line
 float cloudField(vec2 q, float lane){
@@ -205,7 +276,7 @@ void main(){
     // (the land's own height is counted only in part: taken in full, a shadow on a slope that falls away
     // from the sun is drawn out into streaks)
     vec2 P = pw.xz + uSunDir.xz * ((CS_ALT - pw.y * 0.35) / uSunDir.y);
-    vec2 P0 = vec2(0.0, -1.0) + uSunDir.xz * (CS_ALT / uSunDir.y);
+    vec2 P0 = SUBJECT.xz + uSunDir.xz * (CS_ALT / uSunDir.y);
     vec2 Pc = P - CS_WIND * (CS_SPEED * uTime);
     float e = cloudField(Pc, uCloudDbg == 3 ? 1e5 : dot(P - P0, vec2(-CS_WIND.y, CS_WIND.x)));
     // a firm, brushed edge (painted like the tree shadows, not a lighting gradient): small dabs that ride
@@ -246,7 +317,7 @@ void main(){
   // dark painted line: a deeper, more saturated version of the local colour (never black)
   vec3 ink = c * vec3(0.50, 0.46, 0.58);
   // the drawing thins out toward the back planes of the building: firm in front, nearly lost behind
-  float dC = distance(uInvView[3].xyz, vec3(0.0, 4.0, -1.0));
+  float dC = distance(uInvView[3].xyz, SUBJECT);
   float back = clamp((d - max(dC - 12.0, 1.5)) / 24.0, 0.0, 1.0);
   float lineK = mix(1.0, 0.3, smoothstep(0.25, 0.8, back));
   // lost and found: where the tones on either side of an edge are close, the painter lets it go
@@ -266,13 +337,27 @@ void main(){
   float hl = max(sil, crease) * step(0.25, facing) * step(0.5, aux.b) * smoothstep(0.35, 0.6, br2 * 0.6 + br * 0.5);
   c = mix(c, vec3(1.0, 0.985, 0.93), hl * fade * uEdgeLight * 0.55 * smoothstep(1.5, 4.5, d));
 
-  // --- plane separation inside the building: stone that sits well behind the stone around it
-  // (the far wall seen through an arcade) takes one flat step paler and bluer, as on the boards.
-  // Man-made surfaces in shadow only, and a step - no soft halo round silhouettes.
-  float lb = texture(tDepthBlur, uv).r;
-  float ld = log2(max(d, 0.1));
-  float behind = smoothstep(0.22, 0.30, ld - lb) * aux.a * (1.0 - step(0.5, aux.b));
-  c = mix(c, vec3(0.584, 0.608, 0.663), behind * uHalo);
+  // --- the boundaries that survive in the distance (COUNTER above)
+  if (uCounter > 0.0 && d < 5000.0){
+    vec2 q = texture(tDepthBlur, uv).rg;
+    float w = smoothstep(${v1(COUNTER.from[0])}, ${v1(COUNTER.from[1])}, d) * smoothstep(0.04, 0.3, q.g) * (1.0 - step(0.5, aux.a));
+    float dl = min(log2(max(d, 0.1)), ${v1(COUNTER.sky)}) - q.r / max(q.g, 1e-3);
+    // lost and found: long stretches fixed to the land decide where an edge is held
+    vec3 dirW = normalize(wp - SUBJECT);
+    vec2 az = dirW.xz * 1.9 + vec2(dirW.y * 3.0 + log2(max(d, 1.0)) * 0.21);
+    float keep = smoothstep(0.34, 0.58, texture(tBrush, az * 0.23 + 0.13).a);
+    // the mist: one flat step, its edge cut by broad dabs that sit on the land
+    float nz = (texture(tBrush, az * 1.7).g - 0.5) * 0.30 + (texture(tBrush, az * 5.3 + 0.3).r - 0.5) * 0.10;
+    float mx = dl + nz - ${v1(COUNTER.mist)};
+    float mist = smoothstep(-1.0, 1.0, mx / max(fwidth(mx), 0.012)) * keep;
+    float crest = smoothstep(${v1(COUNTER.crest[0])}, ${v1(COUNTER.crest[1])}, -dl) * smoothstep(${v1(COUNTER.crestFrom[0])}, ${v1(COUNTER.crestFrom[1])}, d) * mix(0.4, 1.0, keep);
+    float lum = dot(c, vec3(0.299, 0.587, 0.114));
+    // deeper and a little richer, never grey: the plane's own colour with less air in it
+    vec3 deep = mix(vec3(lum), c, 1.22) * vec3(0.84, 0.87, 0.90);
+    c = mix(c, deep, crest * w * uCounter * ${v1(COUNTER.deep)});
+    c = mix(c, uHazeCol, mist * w * uCounter * ${v1(COUNTER.pale)});
+    if (uCloudDbg == 5) c = vec3(0.5) + vec3(-crest, mist - crest, mist) * 0.5 * w;
+  }
 
   o = vec4(c, col.a);
 }
@@ -340,13 +425,15 @@ export class Pipeline {
     G.uShadowMap.value = this.shadowRT.depthTexture;
     G.uShadowTexel.value = 1 / 2048;   // blur step in UV: kept at ~5 cm of world regardless of map resolution
 
-    this.kuw = pass(KUWAHARA_FS, { tColor: { value: null }, tAux: { value: null }, uTexel: { value: new THREE.Vector2() }, uRadius: { value: 3 } });
-    this.depthDown = pass(DEPTH_DOWN_FS, { tAux: { value: null } });
+    this.kuw = pass(KUWAHARA_FS, { tColor: { value: null }, tAux: { value: null }, uTexel: { value: new THREE.Vector2() }, uRadius: { value: 3 },
+      tBrush: G.uBrush, uInvView: { value: new THREE.Matrix4() }, uTanHalf: { value: new THREE.Vector2() }, uLensShift: { value: 0 }, uPixelK: G.uPixelK,
+      uQuiet: { value: 1 }, uDbg: { value: DBG } });
+    this.depthDown = pass(DEPTH_DOWN_FS, { tAux: { value: null }, uTexel: { value: new THREE.Vector2() } });
     this.blur = pass(BLUR_FS, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } });
     this.comp = pass(COMPOSITE_FS, {
       tColor: { value: null }, tNormal: { value: null }, tAux: { value: null }, tDepthBlur: { value: null },
       tBrush: G.uBrush, uTexel: { value: new THREE.Vector2() }, uHazeCol: G.uHazeCol, uSunDir: G.uSunDir,
-      uLine: { value: 1 }, uHalo: { value: 1 }, uEdgeLight: { value: 1 }, uWobble: { value: 1 }, uPixelK: G.uPixelK,
+      uLine: { value: 1 }, uCounter: { value: 1 }, uEdgeLight: { value: 1 }, uWobble: { value: 1 }, uPixelK: G.uPixelK,
       uInvView: { value: new THREE.Matrix4() }, uTanHalf: { value: new THREE.Vector2() }, uLensShift: { value: 0 },
       uTime: G.uTime, uCloud: { value: CSHADOW }, uCloudDbg: { value: CSHADOW_DBG },
     });
@@ -366,6 +453,8 @@ export class Pipeline {
     this.gbuf.textures[2].type = THREE.HalfFloatType;
     for (const t of this.gbuf.textures) { t.minFilter = t.magFilter = THREE.LinearFilter; t.generateMipmaps = false; }
     this.gbuf.textures[2].minFilter = this.gbuf.textures[2].magFilter = THREE.NearestFilter;
+    // the paint filter reads broad dabs from the mips
+    this.gbuf.textures[0].generateMipmaps = true; this.gbuf.textures[0].minFilter = THREE.LinearMipmapLinearFilter;
     const mk = (W, H, type = THREE.UnsignedByteType) => {
       const t = new THREE.WebGLRenderTarget(W, H, { depthBuffer: false, type });
       t.texture.minFilter = t.texture.magFilter = THREE.LinearFilter; t.texture.generateMipmaps = false;
@@ -416,12 +505,18 @@ export class Pipeline {
     this.kuw.uniforms.tAux.value = this.gbuf.textures[2];
     this.kuw.uniforms.uTexel.value.set(1 / this.w, 1 / this.h);
     this.kuw.uniforms.uRadius.value = p.kuwahara * (this.h / 720);
+    this.kuw.uniforms.uQuiet.value = p.quiet ?? 1;
+    this.kuw.uniforms.uInvView.value.copy(camera.matrixWorld);
+    const th = Math.tan((camera.fov * Math.PI) / 360);
+    this.kuw.uniforms.uTanHalf.value.set(th * camera.aspect, th);
+    this.kuw.uniforms.uLensShift.value = camera.projectionMatrix.elements[9];
     this._fs(this.kuw, this.rtA);
 
     // blurred depth
     this.depthDown.uniforms.tAux.value = this.gbuf.textures[2];
+    this.depthDown.uniforms.uTexel.value.set(1 / this.w, 1 / this.h);
     this._fs(this.depthDown, this.q1);
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 3; i++) {
       const s = (i + 1) * 1.6;
       this.blur.uniforms.tSrc.value = this.q1.texture; this.blur.uniforms.uDir.value.set(this.qTexel.x * s, 0); this._fs(this.blur, this.q2);
       this.blur.uniforms.tSrc.value = this.q2.texture; this.blur.uniforms.uDir.value.set(0, this.qTexel.y * s); this._fs(this.blur, this.q1);
@@ -431,9 +526,9 @@ export class Pipeline {
     const cu = this.comp.uniforms;
     cu.tColor.value = this.rtA.texture; cu.tNormal.value = this.gbuf.textures[1]; cu.tAux.value = this.gbuf.textures[2];
     cu.tDepthBlur.value = this.q1.texture; cu.uTexel.value.set(1 / this.w, 1 / this.h);
-    cu.uLine.value = p.line; cu.uHalo.value = p.halo; cu.uWobble.value = p.wobble ?? 1;
+    cu.uLine.value = p.line; cu.uCounter.value = p.counter ?? 1; cu.uWobble.value = p.wobble ?? 1;
     cu.uInvView.value.copy(camera.matrixWorld);
-    { const th = Math.tan((camera.fov * Math.PI) / 360); cu.uTanHalf.value.set(th * camera.aspect, th); }
+    cu.uTanHalf.value.set(th * camera.aspect, th);
     cu.uLensShift.value = camera.projectionMatrix.elements[9];
     this._fs(this.comp, this.rtB);
 

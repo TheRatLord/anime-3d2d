@@ -3,15 +3,15 @@ import * as THREE from 'three';
 import { G } from './glsl.js';
 import { Pipeline } from './pipeline.js';
 import { makeBrushTexture, makeCloudTexture, makeLeafAtlas, makeGrassAtlas, makePaperTexture } from './brush.js';
-import { SUN, height } from './world.js';
+import { SUN, SUBJECT, height } from './world.js';
+import { LAYOUT } from './layout.js';
 import { buildTerrain } from './terrain.js';
 import { buildSky } from './sky.js';
-import * as RUIN from './ruin.js';
-const { buildRuin, ROCKS } = RUIN;
+import { buildRuin } from './ruin.js';
 import { VIEWS } from './views.js';
 
 const params = {
-  msaa: 4, kuwahara: 3, line: 0.8, halo: 0, bloom: 0.3, grain: 0.035, vignette: 0.2,
+  msaa: 4, kuwahara: 3, line: 0.8, quiet: 1, counter: 1, bloom: 0.3, grain: 0.035, vignette: 0.2,
   fov: 40, fps12: true, scale: 1, mode: 0, hud: 1,
   // layout lens: `shift` keeps verticals vertical (the tilt is taken by a lens shift, as a background
   // painter draws it); `tele` pulls the real camera back behind the viewer and narrows the lens so the
@@ -43,8 +43,10 @@ buildRuin(scene);
 const mods = import.meta.glob('./extra/*.js', { eager: true });
 for (const m of Object.values(mods)) m.default?.(scene, tex, params);
 
+// Everything the walker and the lens keep clear of comes from the layout (src/layout.js): LAYOUT.walls
+// (long faces), LAYOUT.stand (upright things, as circles) and LAYOUT.lying (stones lying about). The lists
+// are read at first use, after everything is built.
 // distance from a point on the ground plan to the nearest standing stone (walls as segments, loose stones as discs)
-const WALLS = [[-5, -9, -5, 7.6], [5, -9, 5, 7.6], [-5.6, -9, 5.6, -9]];
 // Lying stones are split by height: one whose top is no more than LOW.h above the turf cannot reach the
 // near-plane window of a standing viewer while the pull is small (see lowCap() in frame()), so it only
 // limits the pull above that; everything taller limits it by distance alone.
@@ -52,14 +54,14 @@ const LOW = { h: 0.8, margin: 0.15 };
 let ROCK_TALL = null, ROCK_LOW = null;
 function sortRocks() {
   ROCK_TALL = []; ROCK_LOW = [];
-  for (const r of ROCKS) if (r[2] > 0.3) (r[3] !== undefined && r[3] - height(r[0], r[1]) <= LOW.h ? ROCK_LOW : ROCK_TALL).push(r);
+  for (const r of LAYOUT.lying) if (r[2] > 0.3) (r[3] !== undefined && r[3] - height(r[0], r[1]) <= LOW.h ? ROCK_LOW : ROCK_TALL).push(r);
 }
 function solidDist(x, z) {
   if (!ROCK_TALL) sortRocks();
   let d = 1e9;
-  for (const [ax, az, bx, bz] of WALLS) {
+  for (const [ax, az, bx, bz, half] of LAYOUT.walls) {
     const dx = bx - ax, dz = bz - az, t = Math.min(1, Math.max(0, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz)));
-    d = Math.min(d, Math.hypot(x - ax - dx * t, z - az - dz * t) - 0.6);
+    d = Math.min(d, Math.hypot(x - ax - dx * t, z - az - dz * t) - half);
   }
   for (const r of ROCK_TALL) d = Math.min(d, Math.hypot(x - r[0], z - r[1]) - r[2]);
   return Math.min(d, standDist(x, z));
@@ -70,16 +72,9 @@ function lowDist(x, z) {
   for (const r of ROCK_LOW) d = Math.min(d, Math.hypot(x - r[0], z - r[1]) - r[2]);
   return d;
 }
-// standing things one can bump into: columns, altar, piers, buttresses (ruin.js SOLIDS), tree trunks (tree.js TRUNKS)
-let STAND = null;
+// standing things one can bump into: columns, altar, piers, buttresses, walls, tree trunks
 function standDist(x, z) {
-  if (!STAND) {
-    STAND = [...(RUIN.SOLIDS ?? [])];
-    for (const m of Object.values(mods)) if (Array.isArray(m.TRUNKS)) STAND.push(...m.TRUNKS);
-    // the low east wall is a knee-high footing: not to be walked through. Circles of the same size and
-    // spacing as the rest of that wall (so the face stays even), only where ruin.js left them out
-    for (let z = 1.22; z < 7; z += 0.695) if (!STAND.some((r) => Math.abs(r[0] - 5) < 0.1 && Math.abs(r[1] - z) < 0.35)) STAND.push([5, z, 0.56]);
-  }
+  const STAND = LAYOUT.stand;
   // a smooth minimum: a chain of circles along a wall becomes one even face to slide along, not scallops
   let d = 1e9, acc = 0;
   const K = 0.12;
@@ -176,7 +171,9 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
-let last = performance.now(), time = 0, frozen = null, shadowTick = -1;
+// ?t=<seconds>: the ambient clock stands at that time from the first frame (for repeatable test pictures: the sun
+// map, which is painted once at start-up, holds the leaves as the wind has them at that moment)
+let last = performance.now(), time = 0, frozen = q.has('t') ? parseFloat(q.get('t')) : null, shadowTick = -1;
 let pullS = 0, pullT = 0, laX = 0, laZ = 0, lensSnap = true, walkSpeed = 0, velX = 0, velZ = 0;
 const LENS = { vel: 0.2, ahead: [0.5, 1, 1.5, 2, 3, 4, 5, 6.5, 8, 10, 12.5], down: 0.35, up: 0.2, t2: 0.15, k: 0.4 };
 const GAIT = { t: 0.18, shift: 0.12, walk: 4.2, run: 10 };
@@ -204,7 +201,7 @@ function frame(now) {
   // plane stays at the viewer so nothing behind them enters the picture
   // (never less than 3 m, and without a corner at 3 m: with a pull held constant, a corner in D is a
   // step in the zoom rate)
-  const D = Math.hypot(state.pos.x, state.pos.z + 1, 3);
+  const D = Math.hypot(state.pos.x - SUBJECT.x, state.pos.z - SUBJECT.z, 3);
   // tele < 0: automatic - strongest in and around the chapel, where wide-angle foreshortening gives the
   // model away; none out on the hill
   const tele = params.tele >= 0 ? params.tele : 0.5 - 0.2 * sm(8, 18, D) - 0.3 * sm(18, 26, D);

@@ -1,0 +1,24 @@
+{
+  "name": "painted-world",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite --port 5311",
+    "build": "vite build",
+    "preview": "vite preview",
+    "shot": "node tools/shot.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "three": "^0.186.1",
+    "vite": "^8.3.2"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  },
+  "private": true
+}

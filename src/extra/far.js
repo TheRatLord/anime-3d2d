@@ -5,7 +5,8 @@
 //   - lone trees, copses and hedgerows on the rolling ground and the plain (same crown atlas)
 //   - the far plain painted in thin field strips, a road, a river, a village and a castle
 //   - a wooded ridge ring and three pale mountain ranges: one flat value each, one faint shadow wash
-// All cards are static and face the origin: nothing turns or slides when the camera moves.
+// The crown cards stand across the line from the eye to their foot (they turn as the viewer walks, not as he
+// looks); the painted cards (village, castle) are static and face the origin.
 import * as THREE from 'three';
 import { mat, stepFog, STEP_FOG_GLSL } from '../glsl.js';
 import { rng, height, fbm, smooth, SUN } from '../world.js';
@@ -198,8 +199,8 @@ function buildHills(scene) {
 }
 
 // ------------------------------------------------------------------------------------ crown cards
-// One instanced draw for every crown, lone tree, rock outcrop and hedge. Cards are vertical, face
-// the origin and never move. Three flat tones: sun cap (threshold per instance), shadow body, dark accent.
+// One instanced draw for every crown, lone tree, rock outcrop and hedge. Cards are vertical and face
+// the eye's position. Three flat tones: sun cap (threshold per instance), shadow body, dark accent.
 const CROWN_VS = /* glsl */`
 in vec3 position;
 in vec4 iPos;    // foot xyz, card size (m)
@@ -211,7 +212,10 @@ out vec4 vM;      // (hM: place in the wood's mass 0 foot .. 1 top; the interior
 out vec2 vUv; out vec2 vA; out vec4 vB; out vec3 vW; out vec2 vLy;
 void main(){
   vLy = vec2(position.y * 0.5 + 0.5, position.x * sign(iA.y));
-  vec2 d = normalize(iPos.xz);
+  // The card stands across the line from the EYE to its foot (the eye's place, never the way it looks: turning
+  // the head moves nothing). Faced to the middle of the hilltop instead, a tree a hundred metres off is seen
+  // a quarter-turn edge-on from the rim: a narrow cut-out that widens and thins as one walks.
+  vec2 d = normalize(iPos.xz - uCamPos.xz);
   vec3 w = iPos.xyz + vec3(-d.y, 0.0, d.x) * position.x * iPos.w * 0.5 * abs(iA.y) + vec3(0., 1., 0.) * (position.y * 0.5 + 0.5) * iPos.w;
   vW = w;
   vec2 cuv = vec2(position.x * sign(iA.y), -position.y) * 0.495 + 0.5;

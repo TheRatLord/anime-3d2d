@@ -18,6 +18,7 @@ const params = {
   // painter draws it); `tele` pulls the real camera back behind the viewer and narrows the lens so the
   // subject keeps its size but perspective flattens
   shift: 1, tele: -1, wobble: 1,
+  licence: 1,   // the painter's licence (LICENCE in src/glsl.js), switched with P
 };
 const q = new URLSearchParams(location.search);
 for (const k of Object.keys(params)) if (q.has(k)) params[k] = parseFloat(q.get(k));
@@ -107,6 +108,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyL') params.line = params.line ? 0 : 0.8;
   if (e.code === 'KeyT') params.tele = params.tele < 0 ? 0 : params.tele >= 0.7 ? -1 : params.tele + 0.35;
   if (e.code === 'KeyG') params.shift = 1 - params.shift;
+  if (e.code === 'KeyP') params.licence = params.licence ? 0 : 1;
   if (e.code === 'BracketLeft') params.fov = Math.max(14, params.fov - 2);
   if (e.code === 'BracketRight') params.fov = Math.min(70, params.fov + 2);
   if (e.code === 'KeyV') { const names = Object.keys(VIEWS); viewIdx = (viewIdx + 1) % names.length; setView(VIEWS[names[viewIdx]]); state.fly = true; }
@@ -114,7 +116,7 @@ addEventListener('keydown', (e) => {
 let viewIdx = 0;
 const hud = document.createElement('div');
 hud.style.cssText = 'position:fixed;left:14px;bottom:12px;color:#fff;font:12px/1.5 system-ui,sans-serif;text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none;white-space:pre;opacity:.9';
-hud.textContent = 'click to look · WASD move · Shift run · F fly (Q/E down/up) · V next viewpoint\n1 painted · 2 paint only · 3 underlying 3D · 4 normals · 5 depth · K paint filter · L lines · [ ] lens · T telephoto (auto/off/0.35/0.7) · G upright verticals · H hide\nN day / evening · M summer / winter';
+hud.textContent = 'click to look · WASD move · Shift run · F fly (Q/E down/up) · V next viewpoint\n1 painted · 2 paint only · 3 underlying 3D · 4 normals · 5 depth · K paint filter · L lines · [ ] lens · T telephoto (auto/off/0.35/0.7) · G upright verticals · P painter\'s licence · H hide\nN day / evening · M summer / winter';
 document.body.appendChild(hud);
 if (!params.hud) hud.style.display = 'none';
 addEventListener('keyup', (e) => { keys[e.code] = false; });

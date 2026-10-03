@@ -20,6 +20,22 @@ for that second). The four states are baked once behind the loading screen (`?pr
 Everything is still authored for the summer day; `src/mode.js` and the "season and hour" contract at the top of
 `src/glsl.js` describe how the other three states are laid over it.
 
+## Painter's licence
+
+Five places where the picture is deliberately less true than the light and the geometry, because paint that is
+less accurate reads better. `P` switches them while looking (all but the leaf shadows, which are baked with the
+sun map); `?licence=0` opens without any of them, and each has its own strength (`0` off, `1` as painted, up to `2`):
+
+| | what it does | where |
+|---|---|---|
+| `?arris=` | Edge hierarchy. A built thing's corners are read from its planned normals and drawn by rule: a re-entrant corner gathers a dark line; a corner with light on one side and shade on the other gets none (the tones draw it); a corner with one tone either side is found only where it points at the viewer, and let go when seen edge-on. Lines swell and lift in long runs. | composite, `src/pipeline.js` |
+| `?kiwa=` | A shadow on stone is deepest against the light and opens toward its middle; the light is cleanest against the shade. Taken on the canvas, so a shaded pier is held against the sunlit wall behind it. | composite |
+| `?facing=` | The front plane of a mass sits a step above its side planes whatever the light does, and they change hands as one walks round. | `planeFacing()` in `src/glsl.js` |
+| `?loose=` | Leaf shadow is laid, not projected: a soft pool broken into dabs at its fringe, and every tree stands in a pool of it at its foot. Wall shadows stay cut. The sun map records what casts each shadow. | `leafShade()` in `src/glsl.js`, `src/terrain.js`, `src/extra/tree.js` |
+| `?para=` | A warm gradient over the canvas from the sun's side, only when looking toward it. | final pass |
+
+`?edgedbg=1..3` shows the arrises, the lines drawn of them, and the shadow-edge field.
+
 ## Deployment
 
 Live site: https://an-visuals.cinne.dev

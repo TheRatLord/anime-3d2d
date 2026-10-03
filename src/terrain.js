@@ -1217,11 +1217,27 @@ void main(){
     if (rr < 80.0 && gm.a > 0.002){
       vec2 wv = vec2(texture(uBrush, vW.xz / 4.7 + 0.15).a, texture(uBrush, vW.xz / 4.7 + 0.65).a) - 0.5;
       vec3 sp = vW + n * 0.05 + vec3(wv.x, 0.0, wv.y) * 0.30;
+
       float sh = groundShadow(sp);
       t = toneStep(sh, 0.5, wn.g * 0.5 + wn.r * 0.3 + wn.a * 0.2, 0.62);
       // (on the rim of the baked sun mask the screen derivatives inside toneStep() are those of a pixel quad half
       // outside this branch: there the ground is a metre from any shadow, and fully lit)
       if (sh > 0.9999 && maskRim) t = 1.0;
+      // LICENCE (see leafShade in src/glsl.js): the shadow of leaves is laid, not projected. Where foliage
+      // stands between the sun and the ground the shadow is the soft pool of it, cut into dabs that lie on
+      // the ground: a closed mass in its middle with a few dabs of light let in, single dabs of shade off
+      // its fringe. What a wall casts stays as it was cut, also under the leaves.
+      if (uLoose > 0.0 && uSnow < 0.5 && !maskRim){
+        vec2 suv = (uShadowMat * vec4(sp, 1.0)).xy * 0.5 + 0.5;
+        float leaf = leafShade(suv);
+        float lw = smoothstep(0.03, 0.20, leaf) * min(uLoose, 1.0);
+        if (lw > 0.0){
+          vec4 dn = texture(uBrush, vW.xz / 2.6 + 0.37);
+          float tl = toneStep(1.0 - leaf, 0.5, dn.g * 0.6 + dn.r * 0.25 + wn.a * 0.15, 0.95);
+          float solid = (1.0 - t) * (1.0 - smoothstep(0.25, 0.6, leafCaster(suv)));
+          t = min(mix(t, tl, lw), 1.0 - solid);
+        }
+      }
       if (t < 0.999){
         // inside: the second, deeper tone in large dab-shaped patches; the lighter one keeps the rim
         float inside = 1.0 - toneStep(min(sh * 2.0, 1.0) * 0.5 + groundShadowDeep(sp) * 0.5, 0.30, wn.a, 0.16);

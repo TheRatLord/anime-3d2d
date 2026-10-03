@@ -1,5 +1,6 @@
 // The ruined chapel. Walls are laid from small coursed stones; the break lines are noise-shaped
 // and the stones along them are knocked loose, so no silhouette is a staircase of big boxes.
+import { snowCaps } from './snowcap.js';
 import * as THREE from 'three';
 import { Builder, wobble, cutCorner, rockCuts } from './build.js';
 import { rng, fbm, vnoise, smooth, height, SLABS, FLOOR } from './world.js';
@@ -1110,6 +1111,7 @@ export function buildRuin(scene) {
   mesh.frustumCulled = false;
   scene.add(mesh);
   stonePrepass(scene, mesh);
+  { const t0 = performance.now(), sc = snowCaps(mesh); scene.add(sc); console.info(`[ruin] snow caps: ${(sc.geometry?.index.count ?? 0) / 3} triangles in ${(performance.now() - t0).toFixed(0)} ms`); }
   const paving = new THREE.Mesh(pv.geometry(), stoneMaterial({ paving: true }));
   paving.frustumCulled = false;
   scene.add(paving);

@@ -334,7 +334,12 @@ void main(){
   vec3 give = vec3(windDir.x, -0.25, windDir.y) * (wS * outer * reach);
   // (a slow breathing of the give, per region of the crown, so a held gust is not a frozen pose)
   give *= 0.85 + 0.15 * sin(uTime * 0.9 + iPos.x * 0.6 + iPos.z * 0.45);
-  vec3 c = iPos + (R * sin(uTime * 1.3 + ph) + U * (sin(uTime * 1.7 + ph * 1.3) * 0.6)) * (uWind * (${WIND_K.flutter0} * min(uWindAmp, 1.0) + ${WIND_K.flutter1} * wS * outer))
+  // WINTER: a bare crown is a haze of marks a pixel or two across, and each is re-cut from the atlas wherever
+  // its card stands: sprays that nod on every tick make the whole crown shimmer. Bare twigs hardly move in
+  // the wind anyway: in winter the crown stands still (the snow falls through it).
+  float bare = step(0.5, uSnow);
+  give *= 1.0 - bare;
+  vec3 c = iPos + (R * sin(uTime * 1.3 + ph) + U * (sin(uTime * 1.7 + ph * 1.3) * 0.6)) * ((1.0 - bare) * uWind * (${WIND_K.flutter0} * min(uWindAmp, 1.0) + ${WIND_K.flutter1} * wS * outer))
          + R * dot(give, R) + U * dot(give, U);
   // near limit: a card never gets bigger on screen than uMaxPx (half-size), so walking or flying into
   // the crown gives leaf-sized marks, not polygons; right at the lens it shrinks away to nothing
@@ -509,7 +514,7 @@ void main(){
   vec4 t = texture(uLeaf, vUv);
   if (t.a < 0.5) discard;
   if (uSnow > 0.5 && !(t.r < 0.011 || (t.r > 0.30 && t.r < 0.50))) discard;      // (winter: the same few leaves as are drawn)
-  o = vec4(1.0);
+  o = vec4(1.0, 0.0, 0.0, 1.0);                                                    // (the kind of caster: foliage - see leafShade in src/glsl.js)
 }
 `;
 
@@ -1694,6 +1699,45 @@ TREES.forEach((t, i) => {
 // filled while the trees are built, and declared to the layout as it goes), so read it at use time.
 export const TRUNKS = [];
 
+// LICENCE: a tree stands in its shadow. With the sun where it is, the shadow of a high crown falls well away
+// from the trunk and the tree stands on sunlit grass, cut loose from the ground. A painter lays a pool of shade
+// at its foot whatever the sun does. The pool is a caster that exists only for the sun map (shadowOnly): a
+// lobed sheet of 'foliage' a hand above the turf, drawn out a little the way the shadows fall - so the ground,
+// the grass and whatever else reads the sun map all agree about it. `pool` in a TREES entry scales it (0 = none).
+const POOL_VS = /* glsl */`
+in vec3 position; in float aOff;
+uniform mat4 uShadowMat; uniform vec3 uSunDir;
+void main(){ vec3 p = position; p.xz -= normalize(uSunDir.xz) * aOff; gl_Position = uShadowMat * modelMatrix * vec4(p, 1.0); }
+`;
+const POOL_FS = /* glsl */`
+out vec4 o; uniform float uSnow, uLoose;
+void main(){ if (uSnow > 0.5 || uLoose <= 0.0) discard; o = vec4(1.0, 0.0, 0.0, 1.0); }     // (a bare tree has no pool)
+`;
+function poolMesh(trees) {
+  const pos = [], off = [], idx = [], SEG = 24;
+  for (const o of trees) {
+    const k = o.pool ?? 1;
+    if (k <= 0) continue;
+    const H = o.height ?? 11, rp = 0.30 * H * k * Math.min(1.25, Math.max(0.75, (o.spread ?? 1.3) / 1.3)), v0 = pos.length / 3;
+    const R = rng((o.seed ?? 7) * 31 + 5), ph = R() * 6.283;
+    pos.push(o.x, height(o.x, o.z) + 0.6, o.z); off.push(rp * 0.35);
+    for (let i = 0; i < SEG; i++) {
+      const a = (i / SEG) * 6.283, r = rp * (0.82 + 0.22 * Math.sin(a * 3 + ph) + 0.12 * Math.sin(a * 5 + ph * 2.3)), x = o.x + Math.cos(a) * r, z = o.z + Math.sin(a) * r;
+      pos.push(x, height(x, z) + 0.6, z); off.push(rp * 0.35);
+      idx.push(v0, v0 + 1 + i, v0 + 1 + ((i + 1) % SEG));
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aOff', new THREE.Float32BufferAttribute(off, 1));
+  g.setIndex(idx);
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial());
+  m.visible = false; m.frustumCulled = false;
+  m.userData.shadowOnly = true;
+  m.userData.shadowMat = shadowMat(POOL_VS, POOL_FS);
+  return m;
+}
+
 export default function (scene) {
   const atlas = makeFoliageAtlas();
   const stats = [];
@@ -1712,6 +1756,7 @@ export default function (scene) {
   scene.add(trunkMesh(ctx.trunk, ctx.barkTab.texture()));
   scene.add(ctx.cards.mesh(atlas, pal, {}));
   scene.add(bushes.mesh(atlas, pal, { probe: true, wind: 0.012 }));
+  scene.add(poolMesh(TREES));
   window.__foliage = stats.map((s) => s.count);
   window.__trunks = TRUNKS;
   window.__foliageStats = stats.map((s) => ({ cards: s.count, tris: s.tris, clumps: s.clumps }));

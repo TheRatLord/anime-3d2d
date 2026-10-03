@@ -637,6 +637,9 @@ void main(){
   // step of the face it is painted with - see the vertex shader.)
   shade *= mix(1.0, mix(1.02, 0.965, xFace), axial * wallFace * coursed);
   shade *= mix(1.0, mix(1.02, 0.965, vTop.z), breakTop * coursed);
+  // ... and the front plane of a mass sits a step above its side planes, from wherever it is seen (planeFacing)
+  float pFace = axial * wallFace * (1.0 - cyl) * (1.0 - lumpF);
+  shade *= mix(1.0, planeFacing(nl, vEc, 0.12), pFace);
   // A shaft is two tones and a line. The split between them is the sun's terminator, fixed in the
   // world: in sunlight it divides light from shade; where a cast shadow lies over the shaft the
   // same line divides a paler strip from a darker one. Nothing on it follows the viewer.
@@ -737,6 +740,7 @@ void main(){
   float rimW = smoothstep(0.70, 0.90, bw.g * 0.5 + pt.g * 0.5) * (1.0 - farE) * (1.0 - hiK);
   float tRim = toneStep(l, thL - 0.12 * rimW, eNl, eAl) * castE * step(0.01, rimW) * lk;
   float plane = mix(0.935 + 0.065 * step(0.55, ndl) + 0.03 * step(0.7, nl.y) * (1.0 - breakTop), 0.975, max(cyl, lumpF));
+  plane *= mix(1.0, planeFacing(nl, vEc, 0.05), pFace);
   vec3 c = mix(shade, litC * plane, t);
   c = mix(c, mix(shade, litC * plane, 0.40) * vec3(1.05, 1.0, 0.93), max(tRim - t, 0.0));
   if (breakTop > 0.5 && wTop < 0.999) {

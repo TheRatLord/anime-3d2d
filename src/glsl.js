@@ -13,6 +13,7 @@ export const G = {
   uSunDir: { value: new THREE.Vector3(0.5, 0.7, 0.3).normalize() },
   uBrush: { value: null },
   uShadowMap: { value: null },
+  uShadowKind: { value: null },  // what casts each shadow of the sun map (r: 1 = foliage, 0 = anything solid), with mips
   uShadowMat: { value: new THREE.Matrix4() },
   uShadowTexel: { value: 1 / 2048 },
   uHazeCol: { value: new THREE.Color(0xe4f0ee) },
@@ -24,7 +25,31 @@ export const G = {
   uEve: { value: 0 },           // time of day: 0 = the day the scene was painted for, 1 = evening (src/mode.js)
   uSnow: { value: 0 },          // season: 0 = summer, 1 = under snow
   uShadowBias: { value: 0.0016 },
+  uLoose: { value: 1 },         // LICENCE.loose (below)
+  uFacing: { value: 1 },        // LICENCE.facing
 };
+
+// ---- the painter's LICENCE: where the picture departs from what the light and the geometry would give,
+// because paint that is less true reads better. Each is a rule of its own, works from what every material
+// already writes (or from the sun map), and so holds for whatever is built on the hill next; each has a
+// strength, 1 = as painted, 0 = off (URL ?arris= ?kiwa= ?facing= ?loose= ?para=, or ?licence=0 for all; the
+// P key switches the first three and the last while looking):
+//   arris   the hierarchy of edges: of a built thing's corners only those that decide its form from where the
+//           viewer stands are drawn (src/pipeline.js, "the construction")
+//   kiwa    a shadow is deepest against the light and opens toward its middle (src/pipeline.js)
+//   facing  the front plane of a mass sits a step above its side planes, whatever the light (planeFacing below)
+//   loose   leaf shadow is laid in dabs, not projected, and a tree stands in a pool of it (leafShade below,
+//           src/terrain.js, the pool in src/extra/tree.js). Baked with the sun map: set at load only.
+//   para    a warm gradient laid over the canvas from the sun's side (src/pipeline.js, the final pass)
+export const LICENCE = { arris: 1, kiwa: 1, facing: 1, loose: 1, para: 1 };
+if (typeof location !== 'undefined') {
+  const q = new URLSearchParams(location.search);
+  for (const k of Object.keys(LICENCE)) {
+    const v = parseFloat(q.get(k) ?? q.get('licence'));
+    if (Number.isFinite(v)) LICENCE[k] = Math.max(0, Math.min(2, v));
+  }
+  G.uLoose.value = LICENCE.loose; G.uFacing.value = LICENCE.facing;
+}
 
 // ---- wind: one shared world-space field for everything that moves in it (grass, flowers, leaves).
 // A prevailing wind from the west-south-west (blowing toward +x / -z, i.e. east-north-east) with slow,
@@ -171,9 +196,21 @@ uniform float uShadowTexel;
 uniform vec3 uHazeCol;
 uniform vec3 uHazeFarCol;
 uniform vec3 uShadowTint;
-uniform float uEve, uSnow, uShadowBias;
+uniform float uEve, uSnow, uShadowBias, uFacing, uLoose;
+uniform sampler2D uShadowKind;
 ${SHARED_GLSL}
 ${MODE_GLSL}
+// ---- LICENCE: front plane and side plane. Of the upright planes of a built mass, the one the viewer stands
+// before is its front plane and those that run away from him are its side planes. A painter keeps the two a
+// step apart whatever the light does (it is not light: no lamp follows the viewer), so the corner between them
+// is found from wherever he stands, and it changes hands slowly as he walks round. Returns the tone factor
+// for a plane with normal n, judged from ONE point of the mass (its centre), so it is flat over the mass.
+// amp = how far apart: about 0.06 in shade, less in the light.
+float planeFacing(vec3 n, vec3 at, float amp){
+  vec2 v = uCamPos.xz - at.xz, h = n.xz;
+  float f = abs(dot(normalize(h + 1e-5), normalize(v + 1e-5)));
+  return 1.0 + (smoothstep(0.25, 0.85, f) - 0.6) * amp * uFacing * step(0.25, dot(h, h));
+}
 float aastep(float th, float v){ float w = max(fwidth(v), 1e-4); return smoothstep(th - w, th + w, v); }
 
 float hash11(float p){ p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
@@ -210,6 +247,16 @@ vec4 brushStable(vec3 p, vec3 n, float dist, float tilePx){
 
 // fixed world scale version (for things that should stay put, like big colour patches)
 vec4 brushWorld(vec3 p, vec3 n, float tileMeters){ return tri(p / tileMeters, n); }
+
+// ---- LICENCE: a shadow is drawn after the thing that casts it. The sun map also records WHAT casts each
+// shadow (uShadowKind.r: 1 = foliage, 0 = anything solid; a shadow material says which by what it writes).
+// The shadow of a wall is cut: it is a shape, and it is kept true. The shadow of leaves is not projected at
+// all - no painter traces a crown - it is LAID: a soft pool where the foliage stands between the sun and the
+// ground, broken into dabs at its fringe, with a few dabs of light let into it. leafShade() is that pool: the
+// share of foliage along the sun's ray, over about a metre (suv = the place in the sun map).
+float leafShade(vec2 suv){ return textureLod(uShadowKind, suv, 5.0).r; }
+// (... and over a hand's breadth: what casts the shadow right here)
+float leafCaster(vec2 suv){ return textureLod(uShadowKind, suv, 2.0).r; }
 
 // Soft shadow lookup -> a blurred "lit fraction" that the tone step later hardens again.
 // Blurring first and thresholding after rounds the shadow into designed-looking shapes.
@@ -281,7 +328,7 @@ void main(){ gl_Position = uShadowMat * modelMatrix * vec4(position, 1.0); }
 `;
 export const SHADOW_FS = /* glsl */`
 out vec4 o;
-void main(){ o = vec4(1.0); }
+void main(){ o = vec4(0.0, 0.0, 0.0, 1.0); }     // (r = the kind of caster: something solid. Foliage writes 1 - see uShadowKind)
 `;
 export function shadowMat(vs = SHADOW_VS, fs = SHADOW_FS, uniforms = {}, side = THREE.DoubleSide) {
   return new THREE.RawShaderMaterial({

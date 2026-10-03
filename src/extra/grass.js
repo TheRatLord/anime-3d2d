@@ -1298,9 +1298,10 @@ export default function (scene) {
     const m = new THREE.RawShaderMaterial({
       glslVersion: THREE.GLSL3, depthTest: false, depthWrite: false,
       vertexShader: 'in vec3 position; out vec2 vUv; void main(){ vUv = position.xy * 0.5 + 0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-      fragmentShader: `precision highp float; precision highp sampler2D; uniform sampler2D uShadowMap; in vec2 vUv; out vec4 o;
-        void main(){ float d = min(texture(uShadowMap, vUv).r, 0.999999); vec3 e = fract(d * vec3(1.0, 255.0, 65025.0)); e.xy -= e.yz / 255.0; o = vec4(e, 1.0); }`,
-      uniforms: { uShadowMap: G.uShadowMap },
+      // (alpha: the pool of leaf shade - leafShade() in src/glsl.js - so an instance is lit as the ground under it is)
+      fragmentShader: `precision highp float; precision highp sampler2D; uniform sampler2D uShadowMap, uShadowKind; in vec2 vUv; out vec4 o;
+        void main(){ float d = min(texture(uShadowMap, vUv).r, 0.999999); vec3 e = fract(d * vec3(1.0, 255.0, 65025.0)); e.xy -= e.yz / 255.0; o = vec4(e, textureLod(uShadowKind, vUv, 5.0).r); }`,
+      uniforms: { uShadowMap: G.uShadowMap, uShadowKind: G.uShadowKind },
     });
     const tri = new THREE.Mesh(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3)), m);
     tri.frustumCulled = false;
@@ -1314,6 +1315,19 @@ export default function (scene) {
     rt.dispose(); m.dispose(); tri.geometry.dispose();
     const depth = (u, v) => { const i = (v * N + u) * 4; return px[i] / 255 + px[i + 1] / 65025 + px[i + 2] / 16581375; };
     const e = G.uShadowMat.value.elements, BIAS = G.uShadowBias.value;
+    const LOOSE = G.uSnow.value > 0.5 ? 0 : Math.min(1, G.uLoose.value);
+    const leafAt = (sx, sy) => {
+      const u = Math.min(N - 1.001, Math.max(0, sx * N - 0.5)), v = Math.min(N - 1.001, Math.max(0, sy * N - 0.5)), i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j;
+      const a = (i, j) => px[(j * N + i) * 4 + 3] / 255;
+      return (a(i, j) * (1 - fu) + a(i + 1, j) * fu) * (1 - fv) + (a(i, j + 1) * (1 - fu) + a(i + 1, j + 1) * fu) * fv;
+    };
+    const bim = G.uBrush.value.image, bd = bim.data, bs = bim.width;
+    const brush = (u, v, ch) => {
+      u = (u - Math.floor(u)) * bs - 0.5; v = (v - Math.floor(v)) * bs - 0.5;
+      const i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j, w = (k) => ((k % bs) + bs) % bs;
+      const a = (i, j) => bd[(w(j) * bs + w(i)) * 4 + ch] / 255;
+      return (a(i, j) * (1 - fu) + a(i + 1, j) * fu) * (1 - fv) + (a(i, j + 1) * (1 - fu) + a(i + 1, j + 1) * fu) * fv;
+    };
     const P = [[0, 0], [-3.0, -1.6], [2.6, -3.0], [3.0, 2.0], [-2.0, 3.0], [-8.6, 2.4], [1.8, -8.8], [8.4, -2.0], [-2.6, 8.6], [5.6, 5.4], [-5.8, -5.2], [5.2, -5.8], [-5.4, 5.6]];
     const litAt = (x, y, z, rnd) => {
       const sx = (e[0] * x + e[4] * y + e[8] * z + e[12]) * 0.5 + 0.5, sy = (e[1] * x + e[5] * y + e[9] * z + e[13]) * 0.5 + 0.5;
@@ -1325,7 +1339,17 @@ export default function (scene) {
         if (depth(u, v) >= sz - BIAS) lit++;
       }
       const th = 0.5 + (rnd - 0.5) * 0.36;
-      return smooth(th - 0.14, th + 0.14, lit / P.length);
+      let l = smooth(th - 0.14, th + 0.14, lit / P.length);
+      // the shadow of leaves is laid in dabs (the ground's rule, src/terrain.js): the same pool, the same dabs
+      if (LOOSE > 0) {
+        const leaf = leafAt(sx, sy), lw = smooth(0.03, 0.20, leaf) * LOOSE;
+        if (lw > 0) {
+          const u = x / 2.6 + 0.37, v = z / 2.6 + 0.37;
+          const tl = smooth(-0.08, 0.08, 0.5 - leaf + (brush(u, v, 1) * 0.6 + brush(u, v, 0) * 0.25 + rnd * 0.15 - 0.5) * 0.95);
+          l = Math.min(l + (tl - l) * lw, 1 - (1 - l) * (1 - smooth(0.35, 0.75, leaf)));
+        }
+      }
+      return l;
     };
     // Where the ground is certainly in the sun, for the terrain shader (ground map A; it then leaves out its
     // eleven shadow taps there): every 31 cm cell of the hilltop is probed at 6 x 6 points (5 cm apart - the texel

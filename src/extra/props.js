@@ -1,5 +1,6 @@
 // Smaller man-made things: columns in the nave, an altar, a wayside cross, a dry-stone wall
 // along the path and a few weathered fence posts.
+import { snowCaps } from '../snowcap.js';
 import * as THREE from 'three';
 import { Builder, wobble } from '../build.js';
 import { rng, height, fbm, vnoise, PATH, SUN, alongPath } from '../world.js';
@@ -333,6 +334,7 @@ export default function (scene) {
   dry.frustumCulled = false;
   scene.add(dry);
   stonePrepass(scene, dry);
+  scene.add(snowCaps(dry));
 
   const prunedStone = b.prune();
   const stone = new THREE.Mesh(b.geometry(), stoneMaterial({ foot: 0.45 }));
@@ -341,6 +343,7 @@ export default function (scene) {
   stone.frustumCulled = false;
   scene.add(stone);
   stonePrepass(scene, stone);
+  scene.add(snowCaps(stone));
 
   // ---- old fence posts with a sagging rail, west of the path lower down
   const w = new Builder();

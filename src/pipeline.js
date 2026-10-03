@@ -1,7 +1,7 @@
 // Render pipeline: sun shadow depth -> scene (3 targets) -> paint filter -> ink & depth composite
 // -> diffusion bloom -> grade/grain.
 import * as THREE from 'three';
-import { G, HEAD, WIND } from './glsl.js';
+import { G, HEAD, WIND, LICENCE } from './glsl.js';
 import { SUBJECT } from './world.js';
 const v1 = (x) => (+x).toFixed(3);
 
@@ -16,6 +16,9 @@ const _q = new URLSearchParams(globalThis.location?.search ?? '');
 const CSHADOW = _q.has('cshadow') ? Math.max(0, Math.min(2, parseFloat(_q.get('cshadow')) || 0)) : 1;
 const CSHADOW_DBG = parseInt(_q.get('cshadowdbg') ?? '0') || 0;
 const DBG = parseInt(_q.get('dbg') ?? '0') || 0;   // 1 = the describe field
+// ?edgedbg= shows the fields of the painter's licence (LICENCE in src/glsl.js): 1 = the arrises (red convex, green
+// concave, + blue light | shade), 2 = the lines drawn of them, 3 = the edge of the shadows (dark = deepened, light = cleaned)
+const EDGE_DBG = parseInt(_q.get('edgedbg') ?? '0') || 0;
 
 function pass(fs, uniforms) {
   return new THREE.RawShaderMaterial({
@@ -153,6 +156,21 @@ void main(){
   o = vec4(acc * 0.25, 0., 1.);
 }
 `;
+// ---- 2b. the share of light among what is built, round each place (quarter res, blurred): see KIWA in the composite
+const LIT_DOWN_FS = /* glsl */`
+in vec2 vUv; out vec4 o;
+uniform sampler2D tAux;
+uniform vec2 uTexel;
+void main(){
+  vec2 acc = vec2(0.0);
+  for (int k = 0; k < 4; k++){
+    vec4 a = texture(tAux, vUv + vec2(k < 2 ? -1.0 : 1.0, (k & 1) == 0 ? -1.0 : 1.0) * uTexel);
+    float w = step(0.5, a.a);
+    acc += vec2(a.b * w, w);
+  }
+  o = vec4(acc * 0.25, 0., 1.);
+}
+`;
 const BLUR_FS = /* glsl */`
 in vec2 vUv; out vec4 o;
 uniform sampler2D tSrc; uniform vec2 uDir;
@@ -167,9 +185,9 @@ void main(){
 // ---- 3. ink + depth composite
 const COMPOSITE_FS = /* glsl */`
 in vec2 vUv; out vec4 o;
-uniform sampler2D tColor, tNormal, tAux, tDepthBlur, tBrush;
+uniform sampler2D tColor, tNormal, tAux, tDepthBlur, tBrush, tLitBlur;
 uniform vec2 uTexel; uniform vec3 uHazeCol; uniform vec3 uSunDir;
-uniform float uLine, uCounter, uEdgeLight, uWobble;
+uniform float uLine, uCounter, uEdgeLight, uWobble, uArris, uKiwa, uEve; uniform int uEdgeDbg;
 uniform mat4 uInvView; uniform vec2 uTanHalf; uniform float uLensShift;
 uniform float uTime, uPixelK, uCloud; uniform int uCloudDbg;
 
@@ -213,22 +231,63 @@ float cloudField(vec2 q, float lane){
   return f + n - 0.36 - 0.62 * exp(-l * l);
 }
 
-// x = crease within one man-made stone, y = silhouette of a man-made form (near side)
-vec2 edgesAt(vec2 uv){
+vec3 viewPos(vec2 uv, float d){ return vec3((uv * 2. - 1. + vec2(0.0, uLensShift)) * uTanHalf, -1.0) * d; }
+
+// What the drawing finds at one place of something built:
+//  crease = a crease within one stone, sil = the near side of a silhouette (both as before), and its
+//  CONSTRUCTION, read from the planned normals whichever stones lie either side: an ARRIS, where two of its
+//  planes meet. convex / concave = which way it turns; split = light on one side and shade on the other;
+//  shade = both sides in shade; lead = how squarely BOTH planes are seen (1: the corner points at the viewer,
+//  0: one of them is nearly edge-on); firm = the line class of the stone (0 = a broken, irregular edge).
+struct Edge { float crease; float sil; float convex; float concave; float split; float shade; float lead; float firm; };
+void arris(vec2 uA, vec2 uB, vec4 aA, vec4 aB, vec4 nA4, vec4 nB4, vec3 V, inout Edge E){
+  if (min(aA.a, aB.a) < 0.5) return;
+  vec3 nA = nA4.xyz * 2. - 1., nB = nB4.xyz * 2. - 1.;
+  float k = smoothstep(0.35, 0.8, 1.0 - dot(nA, nB));
+  if (k <= 0.0) return;
+  // the two places lie on one surface (a step in depth is a silhouette, not an arris) ...
+  vec3 dP = mat3(uInvView) * (viewPos(uB, aB.r) - viewPos(uA, aA.r));
+  float len = max(length(dP), 1e-5);
+  k *= 1.0 - smoothstep(10.0, 16.0, len / (max(aA.r, aB.r) * uPixelK));
+  // ... and it turns outward (the normals part along the step from one to the other) or inward
+  float s = dot(nB - nA, dP) / len;
+  float cv = smoothstep(0.0, 0.4, s) * k, cc = smoothstep(0.0, 0.4, -s) * k;
+  if (cv + cc > E.convex + E.concave){
+    E.convex = cv; E.concave = cc; E.split = abs(aA.b - aB.b); E.shade = 1.0 - max(aA.b, aB.b);
+    E.lead = smoothstep(0.18, 0.45, min(abs(dot(nA, V)), abs(dot(nB, V))));
+    E.firm = min(nA4.a, nB4.a);
+  }
+}
+Edge edgesAt(vec2 uv, vec3 V){
   vec2 e = uTexel;
   vec4 nr = texture(tNormal, uv), ax = texture(tAux, uv);
   vec3 n0 = nr.xyz * 2. - 1.;
-  vec4 aL = texture(tAux, uv - vec2(e.x, 0.)), aR = texture(tAux, uv + vec2(e.x, 0.));
-  vec4 aD = texture(tAux, uv - vec2(0., e.y)), aU = texture(tAux, uv + vec2(0., e.y));
-  vec3 nL = texture(tNormal, uv - vec2(e.x, 0.)).xyz * 2. - 1., nD = texture(tNormal, uv - vec2(0., e.y)).xyz * 2. - 1.;
+  vec2 uL = uv - vec2(e.x, 0.), uR = uv + vec2(e.x, 0.), uD = uv - vec2(0., e.y), uU = uv + vec2(0., e.y);
+  vec4 aL = texture(tAux, uL), aR = texture(tAux, uR), aD = texture(tAux, uD), aU = texture(tAux, uU);
+  vec4 nL4 = texture(tNormal, uL), nD4 = texture(tNormal, uD);
+  vec3 nL = nL4.xyz * 2. - 1., nD = nD4.xyz * 2. - 1.;
   float d = ax.r;
   float dmax = max(max(aL.r, aR.r), max(aD.r, aU.r)), dmin = min(min(aL.r, aR.r), min(aD.r, aU.r));
   float sameDepth = 1.0 - smoothstep(0.02, 0.05, (dmax - dmin) / max(d, 0.1));
   float cr = max(1. - dot(n0, nL), 1. - dot(n0, nD));
   float sameStone = step(abs(aL.g - ax.g) + abs(aD.g - ax.g), 0.002);
-  float crease = smoothstep(0.3, 0.6, cr) * ax.a * min(aL.a, aD.a) * sameDepth * sameStone;
-  float sil = smoothstep(0.04, 0.10, (dmax - d) / max(d, 0.1)) * ax.a;
-  return vec2(crease, sil);
+  Edge E = Edge(0., 0., 0., 0., 0., 0., 0., 0.);
+  E.crease = smoothstep(0.3, 0.6, cr) * ax.a * min(aL.a, aD.a) * sameDepth * sameStone;
+  E.sil = smoothstep(0.04, 0.10, (dmax - d) / max(d, 0.1)) * ax.a;
+  if (uArris > 0.0 && ax.a > 0.5){
+    arris(uL, uR, aL, aR, nL4, texture(tNormal, uR), V, E);
+    arris(uD, uU, aD, aU, nD4, texture(tNormal, uU), V, E);
+  }
+  return E;
+}
+// the arris alone, read r pixels either side: the broad part of a stroke
+Edge arrisWide(vec2 uv, vec3 V, float r){
+  vec2 e = uTexel * r;
+  Edge E = Edge(0., 0., 0., 0., 0., 0., 0., 0.);
+  vec2 uL = uv - vec2(e.x, 0.), uR = uv + vec2(e.x, 0.), uD = uv - vec2(0., e.y), uU = uv + vec2(0., e.y);
+  arris(uL, uR, texture(tAux, uL), texture(tAux, uR), texture(tNormal, uL), texture(tNormal, uR), V, E);
+  arris(uD, uU, texture(tAux, uD), texture(tAux, uU), texture(tNormal, uD), texture(tNormal, uU), V, E);
+  return E;
 }
 
 void main(){
@@ -307,11 +366,17 @@ void main(){
   // edges are evaluated at four half-pixel offsets and averaged: a soft ~2 px brush line
   // instead of a hard 1 px step that flickers as the camera moves
   float crease = 0.0, sil = 0.0;
+  vec3 V = normalize(uInvView[3].xyz - wp);
+  Edge A = Edge(0., 0., 0., 0., 0., 0., 0., 0.); float aW = 0.0;      // the arris here (its qualities weighted by its presence)
   for (int k = 0; k < 4; k++){
     vec2 o2 = vec2(k < 2 ? -0.5 : 0.5, (k == 0 || k == 2) ? -0.5 : 0.5) * uTexel;
-    vec2 e = edgesAt(uv + o2);
-    crease += e.x * 0.25; sil += e.y * 0.25;
+    Edge e = edgesAt(uv + o2, V);
+    crease += e.crease * 0.25; sil += e.sil * 0.25;
+    float w = e.convex + e.concave;
+    A.convex += e.convex * 0.25; A.concave += e.concave * 0.25;
+    A.split += e.split * w; A.shade += e.shade * w; A.lead += e.lead * w; A.firm += e.firm * w; aW += w;
   }
+  if (aW > 0.0){ A.split /= aW; A.shade /= aW; A.lead /= aW; A.firm /= aW; }
   float facing = dot(n0, uSunDir);
   float fade = 1.0 - smoothstep(22.0, 60.0, d);
   // dark painted line: a deeper, more saturated version of the local colour (never black)
@@ -320,6 +385,7 @@ void main(){
   float dC = distance(uInvView[3].xyz, SUBJECT);
   float back = clamp((d - max(dC - 12.0, 1.5)) / 24.0, 0.0, 1.0);
   float lineK = mix(1.0, 0.3, smoothstep(0.25, 0.8, back));
+  float backK = lineK;
   // lost and found: where the tones on either side of an edge are close, the painter lets it go
   {
     vec3 L = vec3(0.299, 0.587, 0.114);
@@ -333,9 +399,55 @@ void main(){
   }
   float dark = max(crease * 0.55, sil * 0.6 * step(facing, 0.25));   // joints are painted in the stone shader
   c = mix(c, ink, dark * gap * fade * uLine * lineK);
+  // --- the construction (LICENCE: the hierarchy of edges). Of all the arrises of a built thing the painter
+  // draws the few that decide its form FROM WHERE HE STANDS, and lets the rest go:
+  //  - where two masses meet in a re-entrant corner the dark gathers: a line, in light and in shade;
+  //  - a corner with light on one side and shade on the other is already drawn by the two tones: no line
+  //    (the lit side keeps its pale lip, below);
+  //  - a corner with ONE tone either side would be lost: it is found, as a line, only where it points at the
+  //    viewer (both planes seen squarely) - the leading corner of a mass. Seen edge-on it is let go;
+  //  - every line is laid with a pressure that swells and lifts in long runs fixed to the stone.
+  float arrisPale = 0.0;
+  if (uArris > 0.0 && aux.a > 0.5 && d < 75.0){
+    float run = texture(tBrush, wp.xz * 0.043 + wp.y * 0.061 + 0.19).g;
+    float press = smoothstep(0.36, 0.62, run * 0.7 + br2 * 0.3);
+    // (where the pressure is full the stroke is broad: the same arris read two pixels either side)
+    float heavy = smoothstep(0.50, 0.78, run * 0.6 + br * 0.4) * (1.0 - smoothstep(18.0, 40.0, d));
+    if (heavy > 0.0){
+      Edge W = arrisWide(uv, V, 2.0);
+      if (aW <= 0.0){ A.split = W.split; A.shade = W.shade; A.lead = W.lead; A.firm = W.firm; }
+      A.convex = max(A.convex, W.convex * heavy); A.concave = max(A.concave, W.concave * heavy);
+    }
+    float firm = mix(0.35, 1.0, smoothstep(0.05, 0.25, A.firm));
+    float contact = A.concave * mix(0.55, 0.9, A.shade) * mix(0.12, 1.0, press);
+    float found = A.convex * (1.0 - A.split) * A.lead * press * mix(0.40, 0.80, A.shade);
+    float aFade = 1.0 - smoothstep(30.0, 75.0, d);
+    c = mix(c, c * vec3(0.47, 0.43, 0.57), max(contact, found) * firm * aFade * backK * uArris);
+    arrisPale = A.convex * A.split * firm;
+    if (uEdgeDbg == 1) c = vec3(A.convex, A.concave, A.split * (A.convex + A.concave));
+    if (uEdgeDbg == 2) c = mix(vec3(dot(c, vec3(0.333))) * 0.5 + 0.25, vec3(1.0, 0.1, 0.1), max(contact, found) * firm * aFade * backK);
+  } else if (uEdgeDbg == 1) c = vec3(0.0);
   // pale highlight line where a sunlit plane ends (wall tops, lit corners)
-  float hl = max(sil, crease) * step(0.25, facing) * step(0.5, aux.b) * smoothstep(0.35, 0.6, br2 * 0.6 + br * 0.5);
+  float hl = max(max(sil, crease), arrisPale * uArris) * step(0.25, facing) * step(0.5, aux.b) * smoothstep(0.35, 0.6, br2 * 0.6 + br * 0.5);
   c = mix(c, vec3(1.0, 0.985, 0.93), hl * fade * uEdgeLight * 0.55 * smoothstep(1.5, 4.5, d));
+
+  // --- the edge of a shadow (LICENCE: kiwa). Paint does not lay a shadow as one even tone: it is deepest and
+  // richest where it meets the light and opens toward its middle, and the light is cleanest against the shade.
+  // Neither is so in nature; both are what makes a painted shadow read as light. It is taken from the share of
+  // light among what is built round this place ON THE CANVAS, so the pier that stands in shade before a sunlit
+  // wall is held against it too, from wherever it is seen.
+  if (uKiwa > 0.0 && aux.a > 0.5 && d < 200.0){
+    vec2 lb = texture(tLitBlur, uv).rg;
+    float share = lb.r / max(lb.g, 1e-3) + (br2 - 0.5) * 0.16;
+    float lum = dot(c, vec3(0.299, 0.587, 0.114));
+    float kS = smoothstep(0.03, 0.46, share) * (1.0 - aux.b) * smoothstep(0.26, 0.40, lum);
+    float kL = (1.0 - smoothstep(0.54, 0.97, share)) * aux.b;
+    // (at evening light and shade stand at one value and part by hue: there the edge is richer, hardly deeper)
+    vec3 deepS = mix(vec3(lum), c, 1.25) * mix(vec3(0.79, 0.77, 0.87), vec3(0.93, 0.87, 0.97), uEve);
+    c = mix(c, deepS, kS * uKiwa);
+    c = mix(c, 1.0 - (1.0 - c) * vec3(0.66, 0.70, 0.84), kL * uKiwa * (1.0 - 0.5 * uEve));
+    if (uEdgeDbg == 3) c = vec3(0.5 + 0.5 * (kL - kS));
+  }
 
   // --- the boundaries that survive in the distance (COUNTER above)
   if (uCounter > 0.0 && d < 5000.0){
@@ -378,7 +490,7 @@ void main(){
 const FINAL_FS = /* glsl */`
 in vec2 vUv; out vec4 o;
 uniform sampler2D tSrc, tBloom, tPaper, tRaw, tNormal, tAux, tHold;
-uniform vec2 uRes; uniform float uBloom, uGrain, uVignette, uHold; uniform int uMode; uniform vec3 uSunDir;
+uniform vec2 uRes; uniform float uBloom, uGrain, uVignette, uHold, uPara, uEve; uniform int uMode; uniform vec3 uSunDir; uniform vec3 uSunScreen;
 void main(){
   if (uMode == 1) { o = vec4(texture(tRaw, vUv).rgb, 1.0); return; }            // paint, before filter/ink/photography
   if (uMode >= 2) {
@@ -401,6 +513,13 @@ void main(){
   vec2 q = vUv - 0.5;
   float v = smoothstep(0.35, 0.95, length(q * vec2(1.0, 0.85)) * 1.25);
   c = mix(c, c * vec3(0.84, 0.88, 0.95), v * uVignette);
+  // (LICENCE: para light) ... and a warm lightening laid over the canvas from the side the sun stands on - a
+  // gradient of the photography, not of the scene: none with the sun behind the viewer, most looking toward it
+  if (uPara > 0.0 && uSunScreen.z > 0.0){
+    float g = smoothstep(0.0, 1.1, dot(q * vec2(uRes.x / uRes.y, 1.0), uSunScreen.xy) * 1.25 + 0.22);
+    vec3 warm = mix(vec3(1.0, 0.95, 0.80), vec3(1.0, 0.80, 0.60), uEve);
+    c = 1.0 - (1.0 - c) * (1.0 - warm * g * g * uSunScreen.z * uPara * mix(0.16, 0.26, uEve));
+  }
   // a change of hour or season: the picture that stood before it, dissolving out (see snapshot())
   if (uHold > 0.0) c = mix(c, texture(tHold, vUv).rgb, uHold);
   o = vec4(clamp(c, 0.0, 1.0), 1.0);
@@ -429,6 +548,7 @@ export class Pipeline {
       tBrush: G.uBrush, uInvView: { value: new THREE.Matrix4() }, uTanHalf: { value: new THREE.Vector2() }, uLensShift: { value: 0 }, uPixelK: G.uPixelK,
       uQuiet: { value: 1 }, uDbg: { value: DBG } });
     this.depthDown = pass(DEPTH_DOWN_FS, { tAux: { value: null }, uTexel: { value: new THREE.Vector2() } });
+    this.litDown = pass(LIT_DOWN_FS, { tAux: { value: null }, uTexel: { value: new THREE.Vector2() } });
     this.blur = pass(BLUR_FS, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } });
     this.comp = pass(COMPOSITE_FS, {
       tColor: { value: null }, tNormal: { value: null }, tAux: { value: null }, tDepthBlur: { value: null },
@@ -436,6 +556,7 @@ export class Pipeline {
       uLine: { value: 1 }, uCounter: { value: 1 }, uEdgeLight: { value: 1 }, uWobble: { value: 1 }, uPixelK: G.uPixelK,
       uInvView: { value: new THREE.Matrix4() }, uTanHalf: { value: new THREE.Vector2() }, uLensShift: { value: 0 },
       uTime: G.uTime, uCloud: { value: CSHADOW }, uCloudDbg: { value: CSHADOW_DBG },
+      tLitBlur: { value: null }, uArris: { value: 1 }, uKiwa: { value: 1 }, uEve: G.uEve, uEdgeDbg: { value: EDGE_DBG },
     });
     this.bright = pass(BRIGHT_FS, { tSrc: { value: null } });
     this.final = pass(FINAL_FS, {
@@ -443,13 +564,14 @@ export class Pipeline {
       uMode: { value: 0 }, uSunDir: G.uSunDir,
       uRes: { value: new THREE.Vector2() }, uBloom: { value: 0.5 }, uGrain: { value: 0.1 }, uVignette: { value: 0.5 },
       tHold: { value: null }, uHold: { value: 0 },
+      uPara: { value: 1 }, uEve: G.uEve, uSunScreen: { value: new THREE.Vector3() },
     });
   }
 
   setSize(w, h) {
     this.w = w; this.h = h;
     const dispose = (t) => t && t.dispose();
-    [this.gbuf, this.rtA, this.rtB, this.q1, this.q2, this.b1, this.b2, this.hold].forEach(dispose);
+    [this.gbuf, this.rtA, this.rtB, this.q1, this.q2, this.q3, this.q4, this.b1, this.b2, this.hold].forEach(dispose);
     this.gbuf = new THREE.WebGLRenderTarget(w, h, { count: 3, samples: this.p.msaa, depthBuffer: true, type: THREE.UnsignedByteType });
     this.gbuf.textures[2].type = THREE.HalfFloatType;
     for (const t of this.gbuf.textures) { t.minFilter = t.magFilter = THREE.LinearFilter; t.generateMipmaps = false; }
@@ -465,6 +587,7 @@ export class Pipeline {
     this.final.uniforms.tHold.value = this.hold.texture; this.final.uniforms.uHold.value = 0;
     const qw = Math.max(2, w >> 2), qh = Math.max(2, h >> 2);
     this.q1 = mk(qw, qh, THREE.HalfFloatType); this.q2 = mk(qw, qh, THREE.HalfFloatType);
+    this.q3 = mk(qw, qh, THREE.HalfFloatType); this.q4 = mk(qw, qh, THREE.HalfFloatType);
     this.b1 = mk(qw, qh); this.b2 = mk(qw, qh);
     this.qTexel = new THREE.Vector2(1 / qw, 1 / qh);
   }
@@ -481,7 +604,9 @@ export class Pipeline {
     let slot = this.shadowSlots.find((q) => q.key === key), painted = false;
     if (!slot) {
       if (this.shadowSlots.length < 2) {
-        const S = 4096, rt = new THREE.WebGLRenderTarget(S, S, { depthBuffer: true });
+        // (its colour is the kind of caster - G.uShadowKind - read blurred, from the mips)
+        const S = 4096, rt = new THREE.WebGLRenderTarget(S, S, { depthBuffer: true, format: THREE.RedFormat });
+        rt.texture.minFilter = THREE.LinearMipmapLinearFilter; rt.texture.magFilter = THREE.LinearFilter; rt.texture.generateMipmaps = true;
         rt.depthTexture = new THREE.DepthTexture(S, S, THREE.UnsignedIntType);
         rt.depthTexture.minFilter = rt.depthTexture.magFilter = THREE.NearestFilter;
         slot = { rt, mat: new THREE.Matrix4(), used: 0 };
@@ -492,6 +617,7 @@ export class Pipeline {
     slot.used = ++this.shadowTick;
     if (force) { this.renderShadow(scene, sunDir, center, slot); painted = true; }
     G.uShadowMap.value = slot.rt.depthTexture;
+    G.uShadowKind.value = slot.rt.texture;
     G.uShadowMat.value.copy(slot.mat);
     return painted;
   }
@@ -509,9 +635,11 @@ export class Pipeline {
     scene.traverse((o) => {
       if (!o.isMesh) return;
       swapped.push([o, o.material, o.visible]);
-      if (o.userData.shadowMat) o.material = o.userData.shadowMat; else o.visible = false;
+      // (shadowOnly: a caster that is no thing in the picture - a shadow the painter lays where none falls)
+      if (o.userData.shadowMat) { o.material = o.userData.shadowMat; if (o.userData.shadowOnly) o.visible = true; } else o.visible = false;
     });
     this.r.setRenderTarget(slot.rt);
+    this.r.setClearColor(0x000000, 0);
     this.r.clear();
     this.r.render(scene, cam);
     for (const [o, m, v] of swapped) { o.material = m; o.visible = v; }
@@ -548,8 +676,25 @@ export class Pipeline {
       this.blur.uniforms.tSrc.value = this.q2.texture; this.blur.uniforms.uDir.value.set(0, this.qTexel.y * s); this._fs(this.blur, this.q1);
     }
 
+    // the painter's licence (src/glsl.js): p.licence switches it while looking
+    const lic = p.licence ?? 1;
+    this.comp.uniforms.uArris.value = LICENCE.arris * lic; this.comp.uniforms.uKiwa.value = LICENCE.kiwa * lic;
+    this.final.uniforms.uPara.value = LICENCE.para * lic; G.uFacing.value = LICENCE.facing * lic;
+    // the share of light among what is built (kiwa), blurred over a hand's breadth of canvas
+    if (this.comp.uniforms.uKiwa.value > 0) {
+      this.litDown.uniforms.tAux.value = this.gbuf.textures[2];
+      this.litDown.uniforms.uTexel.value.set(1 / this.w, 1 / this.h);
+      this._fs(this.litDown, this.q3);
+      for (let i = 0; i < 3; i++) {
+        const s = (i + 1) * 1.2;
+        this.blur.uniforms.tSrc.value = this.q3.texture; this.blur.uniforms.uDir.value.set(this.qTexel.x * s, 0); this._fs(this.blur, this.q4);
+        this.blur.uniforms.tSrc.value = this.q4.texture; this.blur.uniforms.uDir.value.set(0, this.qTexel.y * s); this._fs(this.blur, this.q3);
+      }
+    }
+
     // composite
     const cu = this.comp.uniforms;
+    cu.tLitBlur.value = this.q3.texture;
     cu.tColor.value = this.rtA.texture; cu.tNormal.value = this.gbuf.textures[1]; cu.tAux.value = this.gbuf.textures[2];
     cu.tDepthBlur.value = this.q1.texture; cu.uTexel.value.set(1 / this.w, 1 / this.h);
     cu.uLine.value = p.line; cu.uCounter.value = p.counter ?? 1; cu.uWobble.value = p.wobble ?? 1;
@@ -569,6 +714,13 @@ export class Pipeline {
     const fu = this.final.uniforms;
     fu.tSrc.value = this.rtB.texture; fu.tBloom.value = this.b1.texture;
     fu.tRaw.value = this.gbuf.textures[0]; fu.tNormal.value = this.gbuf.textures[1]; fu.tAux.value = this.gbuf.textures[2]; fu.uMode.value = p.mode | 0;
+    {
+      // where the sun stands on the canvas: xy = the direction to it from the middle of the picture, z = how far the view is turned toward it
+      const sv = this._sv ?? (this._sv = new THREE.Vector3());
+      sv.copy(G.uSunDir.value).transformDirection(camera.matrixWorldInverse);
+      const l = Math.hypot(sv.x, sv.y) || 1;
+      fu.uSunScreen.value.set(sv.x / l, sv.y / l, Math.min(1, Math.max(0, (-sv.z + 0.15) / 0.8)) * Math.min(1, l * 3));
+    }
     fu.uRes.value.set(this.w, this.h); fu.uBloom.value = p.bloom; fu.uGrain.value = p.grain; fu.uVignette.value = p.vignette;
     if (toHold) { const h = fu.uHold.value; fu.uHold.value = 0; fu.tHold.value = null; this._fs(this.final, this.hold); fu.tHold.value = this.hold.texture; fu.uHold.value = h; }
     else this._fs(this.final, null);

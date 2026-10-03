@@ -86,6 +86,17 @@ inside `atmo()`, so a new prop or far object falls under them without any code o
   `?cshadowdbg=5` shows it). Far land seen in a pocket behind nearer masses takes one flat, brushed-edged
   step paler; a distant ridge is painted deeper toward its crest. Only land beyond ~55 m takes part.
 
+## The painter's licence (nothing to opt into, with two exceptions; `LICENCE` in `src/glsl.js`)
+Deliberate departures from the light and the geometry (`?licence=0` off, `P` toggles; see the README table).
+- **Edges, shadow edges** work in the composite from what `writeAux` already carries: the man-made flag, the
+  PLANNED normal (write the plane the painter means, not the facet), the line class in `oNormal.a` (0 = a broken
+  edge, drawn faintly) and - for anything with the man-made flag - `plane` = 1 in light, 0 in shade.
+- **Front / side planes:** a material that paints flat upright planes multiplies its tone by
+  `planeFacing(normal, centreOfTheMass, amp)` (opt in; not for rounded things).
+- **What casts a shadow:** a shadow material writes its kind in red (`shadowMat()` default = solid, 0; foliage
+  writes 1). Leaf shadow on the ground is then laid in dabs (`leafShade()`), and the grass bake follows. A mesh
+  with `userData.shadowOnly` is drawn into the sun map only (the pools under the trees; `pool` in a `TREES` entry).
+
 ## Your working copy
 You have a private copy of the project and a dev server already running for it (port given in your
 task). Work ONLY inside your copy. Only edit the files your task says you own. If you need a new

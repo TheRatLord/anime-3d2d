@@ -40,11 +40,14 @@ const MEADOW = new Uint8Array(MN * MN * 4);
 // bilinear lookup, identical to texture(uMeadow, (p + 0.5) / 256.) in the shaders; returns [r,g,b,a] in 0..1
 export function meadowAt(x, z) {
   const x0 = Math.floor(x), z0 = Math.floor(z), tx = x - x0, tz = z - z0;
-  const xi = ((x0 % MN) + MN) % MN, zi = ((z0 % MN) + MN) % MN, xj = (xi + 1) % MN, zj = (zi + 1) % MN;
+  // MN is a power of two; masking wraps negative integer coordinates as well.
+  const xi = x0 & (MN - 1), zi = z0 & (MN - 1), xj = (xi + 1) & (MN - 1), zj = (zi + 1) & (MN - 1);
+  const ia = (zi * MN + xi) * 4, ib = (zi * MN + xj) * 4;
+  const ic = (zj * MN + xi) * 4, id = (zj * MN + xj) * 4;
   const o = [0, 0, 0, 0];
   for (let k = 0; k < 4; k++) {
-    const a = MEADOW[(zi * MN + xi) * 4 + k], b = MEADOW[(zi * MN + xj) * 4 + k];
-    const c = MEADOW[(zj * MN + xi) * 4 + k], d = MEADOW[(zj * MN + xj) * 4 + k];
+    const a = MEADOW[ia + k], b = MEADOW[ib + k];
+    const c = MEADOW[ic + k], d = MEADOW[id + k];
     o[k] = (a + (b - a) * tx + (c - a) * tz + (a - b - c + d) * tx * tz) / 255;
   }
   return o;
@@ -308,9 +311,24 @@ const RAD = Math.PI / 180;
 }
 const ARC_WARP = 4.0, ARC_WS = 0.8, ARC_WOX = 17, ARC_WOZ = 9, ARC_MIN = 0.14, NOISE_IN = 34, NOISE_OUT = 50, NOISE_DROP = 0.30, NOISE_K = 0.0;
 const GAP_S = 3.2, GAP_OX = 7, GAP_OZ = 83;
+// Conservative radial bins omit only arcs already rejected by the v test below.
+// Keep original order: accumulation and strongest-palette ties must stay identical.
+const ARC_BIN = 4;
+const arcBins = [];
+for (const A of ARCS) {
+  const reach = 2.4 * A[3] * (A[6] ? 1.6 : 1);
+  const lo = Math.floor((A[0] - reach) / ARC_BIN) - 1;
+  const hi = Math.floor((A[0] + reach) / ARC_BIN) + 1;
+  for (let i = lo; i <= hi; i++) {
+    const bin = arcBins[i] ??= [[], []];
+    bin[A[6] ? 1 : 0].push(A);
+  }
+}
 // on the lower slopes and at the foot of the hill (seen from the brow as bands lying toward the horizon) the noise
 // drifts are let grow: this much is added to the three fields from FOOT_IN to FOOT_OUT metres out
 const FOOT = 0.11, FOOT_IN = 68, FOOT_OUT = 88;
+const EMPTY_ARCS = [];
+const arcOrder = new Map(ARCS.map((arc, i) => [arc, i]));
 // the planned drifts at (x, z): [yellow, pink, white, palette of the strongest one or -1]
 // (wx, wz: the push of the edge noise - the bands are read at the pushed place, the small satellites at a
 // third of it, or they would be torn to shreds)
@@ -322,7 +340,13 @@ function arcField(x0, z0, wx, wz) {
   const gap = sstep(0.28, 0.44, gm[3]), wid = 0.45 + 1.15 * gm[2];
   const o = [0, 0, 0, -1];
   let bw = ARC_MIN;
-  for (const A of ARCS) {
+  // Merge the satellite and warped-band lists in their original ARCS order.
+  const small = arcBins[Math.floor(rs / ARC_BIN)]?.[0] ?? EMPTY_ARCS;
+  const bands = arcBins[Math.floor(rw / ARC_BIN)]?.[1] ?? EMPTY_ARCS;
+  let si = 0, bi = 0;
+  while (si < small.length || bi < bands.length) {
+    const A = bi >= bands.length || (si < small.length && arcOrder.get(small[si]) < arcOrder.get(bands[bi]))
+      ? small[si++] : bands[bi++];
     const hd = A[3] * (A[6] ? wid : 1), v = ((A[6] ? rw : rs) - A[0]) / hd;
     if (Math.abs(v) > 2.4) continue;
     let da = (A[6] ? a : as) - A[1] * RAD; da -= 6.2831853 * Math.round(da / 6.2831853);

@@ -175,8 +175,10 @@ function makeFoliageAtlas(cell = 256) {
 // ------------------------------------------------------------------ shaders
 // Where the deeper of the two dark teals goes: big dabs of the brush texture laid through the crown
 // on a fixed oblique plane (about 1.5 m x 0.8 m, leaning), the same for the leaf cards and the base shapes.
-// how much of a crown seen from the side is opened to the sky (0 = none)
-const SIDE_HOLE = +(new URLSearchParams(location.search).get('sidehole') ?? 0.55);
+// how much of a crown seen from the side is opened to the sky (0 = none). Off by default: the holes lie on a
+// plane that turns with the eye, so walking sweeps them across the crown and every spray they pass shrinks
+// away and grows back - the leaves are seen changing size. (?sidehole=0.55 brings them back to compare.)
+const SIDE_HOLE = +(new URLSearchParams(location.search).get('sidehole') ?? 0);
 const SIDE_GLSL = /* glsl */`
 const float SIDE_HOLE = ${SIDE_HOLE.toFixed(3)};
 // SKY HOLES THROUGH A CROWN SEEN FROM THE SIDE. A crown is many layers of leaves deep, so a gap in one layer

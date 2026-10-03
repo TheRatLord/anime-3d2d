@@ -7,17 +7,20 @@
     "dev": "vite --port 5311",
     "build": "vite build",
     "preview": "vite preview",
-    "shot": "node tools/shot.mjs"
+    "shot": "node tools/shot.mjs",
+    "deploy": "cf deploy"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "three": "^0.186.1",
     "vite": "^8.3.2"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "beta",
+    "cf": "^1.0.0-beta.12",
     "playwright-core": "^1.63.0"
   },
   "private": true

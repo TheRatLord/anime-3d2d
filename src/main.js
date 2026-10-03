@@ -12,7 +12,7 @@ import { VIEWS } from './views.js';
 
 const params = {
   msaa: 4, kuwahara: 3, line: 0.8, halo: 0, bloom: 0.3, grain: 0.035, vignette: 0.2,
-  fov: 32, fps12: true, scale: 1, mode: 0, hud: 1,
+  fov: 40, fps12: true, scale: 1, mode: 0, hud: 1,
   // layout lens: `shift` keeps verticals vertical (the tilt is taken by a lens shift, as a background
   // painter draws it); `tele` pulls the real camera back behind the viewer and narrows the lens so the
   // subject keeps its size but perspective flattens
@@ -93,11 +93,11 @@ function standDist(x, z) {
 
 // ---------------- camera: walk / fly
 const state = { pos: new THREE.Vector3(9, 1.7, 22), yaw: 0.45, pitch: 0.06, fly: false };
-function setView(v) {
+function setView(v, keepFov = false) {
   state.pos.set(...v.pos);
   const d = new THREE.Vector3(...v.look).sub(state.pos).normalize();
   state.yaw = Math.atan2(-d.x, -d.z); state.pitch = Math.asin(d.y);
-  if (v.fov) { params.fov = v.fov; }
+  if (v.fov && !keepFov) { params.fov = v.fov; }
   state.fly = true; lensSnap = true;
 }
 const keys = {};
@@ -133,16 +133,15 @@ function move(dt) {
   // without a jolt); letting go of the keys stops at once. Shift changes the pace over GAIT.shift.
   const going = keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD || (state.fly && (keys.KeyE || keys.Space || keys.KeyQ));
   gait = going ? Math.min(1, gait + dt / GAIT.t) : 0;
-  pace += ((keys.ShiftLeft ? 9 : 3.2) - pace) * Math.min(1, dt / GAIT.shift);
-  if (!going) pace = 3.2;
+  pace += ((keys.ShiftLeft ? GAIT.run : GAIT.walk) - pace) * Math.min(1, dt / GAIT.shift);
+  if (!going) pace = GAIT.walk;
   const sp = pace * dt * gait * gait * (3 - 2 * gait);
   const f = new THREE.Vector3(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
   const r = new THREE.Vector3(-f.z, 0, f.x);
   if (state.fly) f.set(-Math.sin(state.yaw) * Math.cos(state.pitch), Math.sin(state.pitch), -Math.cos(state.yaw) * Math.cos(state.pitch));
-  if (keys.KeyW) state.pos.addScaledVector(f, sp);
-  if (keys.KeyS) state.pos.addScaledVector(f, -sp);
-  if (keys.KeyD) state.pos.addScaledVector(r, sp);
-  if (keys.KeyA) state.pos.addScaledVector(r, -sp);
+  // one pace in every direction: a diagonal (W+D) is not sqrt(2) faster
+  const dir = new THREE.Vector3().addScaledVector(f, (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0)).addScaledVector(r, (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0));
+  if (dir.lengthSq() > 1e-6) state.pos.addScaledVector(dir.normalize(), sp);
   // on foot, standing stone and trunks are solid: slide along them
   if (!state.fly) {
     const d1 = standDist(state.pos.x, state.pos.z);
@@ -179,9 +178,9 @@ resize();
 
 let last = performance.now(), time = 0, frozen = null, shadowTick = -1;
 let pullS = 0, pullT = 0, laX = 0, laZ = 0, lensSnap = true, walkSpeed = 0, velX = 0, velZ = 0;
-const LENS = { vel: 0.2, ahead: [0.15, 0.3, 0.45, 0.6], t1: 0.08, t2: 0.08, up: 0.9, clear: [0.9, 1.2, 1.5], k: 0.4 };
-const GAIT = { t: 0.18, shift: 0.12 };
-let gait = 0, pace = 3.2, freeX = 9, freeZ = 22;
+const LENS = { vel: 0.2, ahead: [0.5, 1, 1.5, 2, 3, 4, 5, 6.5, 8, 10, 12.5], down: 0.35, up: 0.2, t2: 0.15, k: 0.4 };
+const GAIT = { t: 0.18, shift: 0.12, walk: 4.2, run: 10 };
+let gait = 0, pace = GAIT.walk, freeX = 9, freeZ = 22;
 const stat = { ms: 0, frames: 0 }, lens = {};
 const fwd = new THREE.Vector3();
 function frame(now) {
@@ -199,9 +198,7 @@ function frame(now) {
   // stretch things as you turn)
   const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
   const lim = 0.5 * params.shift, ap = Math.abs(state.pitch);
-  const sh = lim > 0 ? Math.sign(state.pitch) * lim * Math.tanh(ap / lim) * (1 - sm(0.8, 1.3, ap)) : 0;
-  const pitch = state.pitch - sh;
-  camera.rotation.set(pitch, state.yaw, 0, 'YXZ');
+  let sh = lim > 0 ? Math.sign(state.pitch) * lim * Math.tanh(ap / lim) * (1 - sm(0.8, 1.3, ap)) : 0;
   // telephoto: the subject distance is how far we stand from the chapel (never less than a few metres);
   // the camera backs off by tele * that, the lens narrows to keep the subject's size, and the near
   // plane stays at the viewer so nothing behind them enters the picture
@@ -211,73 +208,69 @@ function frame(now) {
   // tele < 0: automatic - strongest in and around the chapel, where wide-angle foreshortening gives the
   // model away; none out on the hill
   const tele = params.tele >= 0 ? params.tele : 0.5 - 0.2 * sm(8, 18, D) - 0.3 * sm(18, 26, D);
-  // the near plane is a window at the viewer: keep it clear of anything solid beside them. Only this
-  // part, which depends on where one stands, is smoothed: it looks ahead along the walk so the lens
-  // starts giving way before a pier arrives, returns slowly, and only while walking (a standing
-  // picture must not keep zooming). The clamp at the present position is always enforced.
-  // `lens` only reports these values to window.__app for measuring.
+  // the near plane is a window at the viewer: keep it clear of anything solid beside them. The pull
+  // changes only while walking (a standing picture must not keep zooming) and never faster than
+  // LENS.down / LENS.up metres per metre walked: the camera moves by the walk minus the change of pull,
+  // so a faster change would read as a sudden spurt (or stall) of one's own pace. It looks ahead along
+  // the walk far enough to give way at that rate before a pier arrives. The clamp at the present
+  // position is always enforced. `lens` only reports these values to window.__app for measuring.
   const moving = walkSpeed > 0.05;
-  // the look-ahead velocity eases in, so the first step toward a pier does not drop the lens at once
+  // the look-ahead direction eases in, so a sidestep does not swing it at once
   if (!moving) { laX = 0; laZ = 0; }
   else { const kv = Math.min(1, dt / LENS.vel); laX += (velX - laX) * kv; laZ += (velZ - laZ) * kv; }
+  const laL = Math.hypot(laX, laZ), ux = laL > 1e-4 ? laX / laL : 0, uz = laL > 1e-4 ? laZ / laL : 0;
   // a smooth minimum (never above the true minimum): where one limit hands over to another the pull turns
   // a corner over LENS.k metres instead of in one frame
   const smin = (a, b) => { const m = Math.min(a, b); return Math.max(0, m - LENS.k * Math.log(1 + Math.exp(-Math.abs(a - b) / LENS.k))); };
-  // lowCap: the largest pull at which the bottom of the near-plane window (at the viewer) still clears a
-  // lying stone LOW.h high by LOW.margin, at whatever tilt (the worst is a slight downward look: the
-  // lens shift lowers the window while the pitch factor below has not yet taken the pull away)
-  let lowCap = 0;
-  {
-    const room = state.pos.y - height(state.pos.x, state.pos.z) - LOW.h - LOW.margin, t0 = Math.tan((params.fov * Math.PI) / 360);
-    if (room > 0) {
-      lowCap = 1e9;
-      for (let pt = 0; pt >= -0.3001; pt -= 0.02) {
-        const f = sm(-0.30, -0.08, pt); if (f < 1e-3) break;
-        const s2 = lim > 0 ? lim * Math.tanh(-pt / lim) : 0;
-        lowCap = Math.min(lowCap, (room / (t0 + Math.tan(s2)) - 0.3) / f);
-      }
-      lowCap = Math.max(0, lowCap);
-    }
-  }
-  const clampAt = (t) => {
-    const x = state.pos.x + laX * t, z = state.pos.z + laZ * t;
+  const eye = state.pos.y - height(state.pos.x, state.pos.z), th0 = Math.tan((params.fov * Math.PI) / 360);
+  // lowCap: the largest pull at which the bottom of the near-plane window (at the viewer, on a level look)
+  // still clears a lying stone LOW.h high by LOW.margin. Looking down, the lens shift is held back so the
+  // window does not sink below that (see below), so the level look is the worst case.
+  const room = eye - LOW.h - LOW.margin, lowCap = room > 0 ? Math.max(0, room / th0 - 0.3) : 0;
+  const clampAt = (d) => {
+    const x = state.pos.x + ux * d, z = state.pos.z + uz * d;
     // (a lying stone limits the pull by distance or by lowCap, whichever allows more; the corner between the
     // two is rounded: a shifted soft-plus that never rises above either and only grows with distance)
     const lo = 1.7 * Math.max(0, lowDist(x, z) - 0.35);
     const low = Math.max(0, lowCap - 0.405 * LENS.k + LENS.k * Math.log(1 + 0.5 * Math.exp(Math.min(40, (lo - lowCap) / LENS.k))));
     return smin(1.7 * Math.max(0, solidDist(x, z) - 0.35), low);
   };
-  const c0raw = clampAt(0), want = tele * Math.min(D, 40);
-  const c0 = Math.min(c0raw, smin(want, c0raw));
-  let tgt = c0;
-  for (const t of LENS.ahead) tgt = Math.min(tgt, clampAt(t));
-  tgt = Math.min(tgt, smin(want, tgt));
-  if (lensSnap) pullS = pullT = c0;
+  // (only the clearance is a hard limit; the telephoto pull `want` is a preference, reached at the capped rate)
+  const c0 = clampAt(0), want = tele * Math.min(D, 40);
+  // the most pull from which, giving way at LENS.down per metre, the lens still clears every limit ahead
+  // (planned at 0.75 of that rate: the smoothing stage below lags the first)
+  let clear = c0;
+  if (laL > 1e-4) for (const d of LENS.ahead) clear = Math.min(clear, clampAt(d) + 0.75 * LENS.down * d);
+  const tgt = smin(want, clear);
+  if (lensSnap) pullS = pullT = smin(want, c0);
   else if (moving) {
-    // two stages: the first takes the target (down quickly, up slowly), the second rounds the corners
-    // of the first, so the zoom rate changes over several frames instead of one
-    if (tgt < pullT) pullT += (tgt - pullT) * Math.min(1, dt / LENS.t1);
-    else {
-      // it comes back only as far as the way further ahead allows, or it would pump between the columns
-      let back = tgt;
-      for (const t of LENS.clear) back = Math.min(back, clampAt(t));
-      if (back > pullT) pullT += (back - pullT) * Math.min(1, dt * LENS.up * Math.min(1, walkSpeed / 1.5));
-    }
+    // the first stage follows the target at a capped rate per metre walked, the second rounds its corners.
+    // Giving way to a stone ahead may go at LENS.down; easing toward `want` alone goes at LENS.up both ways.
+    const step = walkSpeed * dt;
+    pullT = tgt >= pullT ? Math.min(tgt, pullT + LENS.up * step) : Math.max(tgt, pullT - (clear < pullT ? LENS.down : LENS.up) * step);
     pullS += (pullT - pullS) * Math.min(1, dt / LENS.t2);
   }
   pullT = Math.min(pullT, c0); pullS = Math.min(pullS, c0); lensSnap = false;
-  lens.pullS = pullS; lens.c0 = c0; lens.want = want; lens.tgt = tgt; lens.lowCap = lowCap;
-  // looking down the near plane would cut the ground: that part follows the tilt directly, both ways
-  let pull = pullS * sm(-0.30, -0.08, state.pitch);
-  const th0 = Math.tan((params.fov * Math.PI) / 360);
-  {
-    const eye = state.pos.y - height(state.pos.x, state.pos.z);
-    const thA = th0 * D / (D + pull);
-    pull = Math.max(0, Math.min(pull, 0.8 * eye / Math.max(thA - Math.tan(sh), 1e-3) - 0.3));
+  lens.pullS = pullS; lens.c0 = c0; lens.want = want; lens.tgt = tgt; lens.lowCap = lowCap; lens.D = D;
+  // looking steeply down the pull gives way, gradually (a camera far behind the viewer would rise high over
+  // them as it turns about them)
+  let pull = pullS * sm(-1.1, -0.35, state.pitch);
+  // the near-plane window at the viewer stays above the ground: on a level look th * (0.3 + pull) <= 0.8 eye
+  pull = Math.max(0, Math.min(pull, 0.8 * eye / (th0 * D / (D + pull)) - 0.3));
+  const th = th0 * D / (D + pull), n = 0.3 + pull;
+  // looking down, a lens shift lowers that window by n * tan(sh). Where it would reach the ground (or the top
+  // of a lying stone near enough to be in it), the shift is held and the rest of the tilt is real pitch: the
+  // camera turns about the viewer rather than dollying in and widening, which reads as a step forward.
+  if (sh < 0) {
+    const lo = 1.7 * Math.max(0, lowDist(state.pos.x, state.pos.z) - 0.35);
+    const floor = 0.2 * eye + (LOW.h + LOW.margin - 0.2 * eye) * sm(lo - 0.3, lo + 0.3, pull);
+    const maxSh = Math.atan(Math.max(0, (eye - floor) / n - th)), k = 0.04;
+    // (a smooth minimum of the two, never above either)
+    sh = -Math.max(0, -k * Math.log(Math.exp(sh / k) + Math.exp(-maxSh / k)));
   }
-  const th = th0 * D / (D + pull);
+  camera.rotation.set(state.pitch - sh, state.yaw, 0, 'YXZ');
   camera.fov = (Math.atan(th) * 360) / Math.PI;
-  camera.near = 0.3 + pull; camera.updateProjectionMatrix();
+  camera.near = n; camera.updateProjectionMatrix();
   camera.projectionMatrix.elements[9] = Math.tan(sh) / th;
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   camera.getWorldDirection(fwd);
@@ -291,6 +284,10 @@ function frame(now) {
   // nothing that casts a shadow moves (leaf shadows are held still), so the sun map is painted once
   if (stat.frames < 8) pipe.renderShadow(scene, SUN, new THREE.Vector3(0, 0, 4));
   pipe.render(scene, camera);
+  if (stat.frames === 1) {
+    performance.mark('scene-ready');
+    dispatchEvent(new Event('scene-ready'));
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -301,4 +298,4 @@ window.__app = {
   freeze: (t) => { frozen = t; },
   gpu: () => { const gl = renderer.getContext(); const e = gl.getExtension('WEBGL_debug_renderer_info'); return e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : 'unknown'; },
 };
-if (q.has('view')) setView(VIEWS[q.get('view')]); else setView(VIEWS.hero);
+if (q.has('view')) setView(VIEWS[q.get('view')]); else setView(VIEWS.hero, true); // the opening view keeps the default lens (params.fov)

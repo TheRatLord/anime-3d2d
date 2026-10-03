@@ -7,3 +7,9 @@ shots/
 .env.*
 !.env.example
 *.log
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.cloudflare/

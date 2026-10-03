@@ -5,8 +5,21 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Painted World</title>
 <style>html,body{margin:0;height:100%;background:#111;overflow:hidden}canvas{display:block;width:100vw;height:100vh}</style>
+<style>
+#loading{position:fixed;inset:0;z-index:10;display:grid;place-content:center;justify-items:center;gap:16px;background:#182421;color:#eef1df;font:16px/1.5 system-ui,sans-serif;text-align:center}
+#loading p{margin:0}#loading small{color:#b9c7ba}
+.loading-ring{width:32px;height:32px;border:2px solid #526456;border-top-color:#eef1df;border-radius:50%;animation:loading-spin 1s linear infinite}
+@keyframes loading-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.loading-ring{animation:none}}
+</style>
 </head>
 <body>
-<script type="module" src="/src/main.js"></script>
+<div id="loading" role="status" aria-live="polite">
+  <div class="loading-ring" aria-hidden="true"></div>
+  <p id="loading-message">Painting the world…</p>
+  <small id="loading-detail">Preparing the landscape, textures, and light.</small>
+</div>
+<noscript><style>#loading{display:none}</style><p style="color:white">Enable JavaScript to explore Painted World.</p></noscript>
+<script type="module" src="/src/start.js"></script>
 </body>
 </html>

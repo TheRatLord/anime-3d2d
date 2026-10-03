@@ -513,6 +513,14 @@ void main(){
   float alpha = cover * tone * vK.z * smoothstep(0.03, 0.14, e) * (1.0 - smoothstep(0.0, 0.45, calm));
   if (alpha < 0.004) discard;
   vec3 col = mix(vec3(0.950, 0.995, 0.992), vec3(0.910, 0.975, 0.984), smoothstep(0.80, 0.62, tone));
+  if (uEve > 0.0){
+    // evening: the thick white takes the low sun (peach on the sun's side of the sky, rose away from it),
+    // the thinner white is the violet of the cloud's own shade
+    float toSun = smoothstep(-0.5, 0.8, dot(normalize(vDir.xz + 1e-5), normalize(uSunDir.xz)));
+    vec3 thick = mix(vec3(0.930, 0.740, 0.735), vec3(1.000, 0.870, 0.720), toSun);
+    vec3 thinC = mix(vec3(0.700, 0.645, 0.810), vec3(0.800, 0.690, 0.790), toSun);
+    col = mix(col, mix(thick, thinC, smoothstep(0.80, 0.62, tone)), uEve);
+  }
   oColor  = vec4(col * alpha, alpha);                      // premultiplied; the blend leaves the sky's alpha
   oNormal = vec4(0.0);                                     // and its normal / aux untouched
   oAux    = vec4(0.0);
@@ -557,7 +565,7 @@ export function buildCloudCards(scene, cloudTex, cels, sunDir, list = CLOUDS) {
     return g;
   };
   const m = mat({
-    vs: VS, fs: FS, side: THREE.DoubleSide,
+    vs: VS, fs: FS, side: THREE.DoubleSide, hour: false,
     uniforms: {
       uCels: { value: cels }, uCloud: { value: cloudTex },
       // 0 = painted (soft dabbed edges, as in the reference still); 1 = cut like the landscape. ?cloudcut=1 to compare.

@@ -14,6 +14,20 @@ import { makeCloudCels, buildCloudCards } from './extra/sky-clouds.js';
 export const STOPS = [
   [0, '#F2FEFD'], [2, '#F1FDFC'], [5, '#D2F0FA'], [9, '#B7E3F7'], [14, '#92D4F4'], [24, '#78C8F0'], [50, '#66BBEA'], [90, '#5AB0E5'],
 ];
+// Evening. Two tables: the sky on the side of the low sun (the peach of the horizon climbing through rose
+// into the lavender overhead) and the sky opposite (a duller rose band under the same lavender). The picture
+// goes from one to the other round the horizon.
+export const STOPS_EVE_SUN = [
+  [0, '#FFEBC6'], [2, '#FFE5BF'], [5, '#FCD6B0'], [9, '#F4C6B1'], [14, '#DFB8C0'], [24, '#BBAED5'], [50, '#9BA4DA'], [90, '#8895D0'],
+];
+export const STOPS_EVE_FAR = [
+  [0, '#EBCDC6'], [2, '#E8C7C6'], [5, '#DCBBC9'], [9, '#C9B1D0'], [14, '#B6ACD6'], [24, '#A4A8DA'], [50, '#949ED7'], [90, '#8895D0'],
+];
+// Under snow the day's sky is a winter one: the same wash, a little paler and greyer (the air is full of light
+// thrown back by the ground), so that the white land still has something to stand against.
+export const STOPS_SNOW = [
+  [0, '#F4FAFD'], [2, '#F0F8FC'], [5, '#D9ECF7'], [9, '#C0DEF2'], [14, '#A3CEEC'], [24, '#8CC0E6'], [50, '#7BB3DF'], [90, '#70AADA'],
+];
 // The photography pass screens a bloom of the bright parts over the picture (pipeline.js: BRIGHT_FS,
 // FINAL_FS) and the whole sky is bright, so what is written here comes out paler. The stops are
 // corrected for that, for the pipeline's default bloom strength.
@@ -31,8 +45,18 @@ const hex3 = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
 
 // ramp texture, read at u = sqrt(sin(elevation)) (so the quick change near the horizon gets most texels)
 const RAMP_N = 256;
+// one row per table: 0 day, 1 evening toward the sun, 2 evening away from it, 3 the day under snow
+const TABLES = [STOPS, STOPS_EVE_SUN, STOPS_EVE_FAR, STOPS_SNOW];
 function makeRamp() {
-  const xs = STOPS.map((s) => s[0]), cs = STOPS.map((s) => preBloom(hex3(s[1])));
+  const d = new Uint16Array(RAMP_N * TABLES.length * 4);
+  TABLES.forEach((T, row) => rampRow(d, row, T));
+  const t = new THREE.DataTexture(d, RAMP_N, TABLES.length, THREE.RGBAFormat, THREE.HalfFloatType);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true;
+  return t;
+}
+function rampRow(d, row, T) {
+  const xs = T.map((s) => s[0]), cs = T.map((s) => preBloom(hex3(s[1])));
   const n = xs.length;
   // monotone cubic (Fritsch-Carlson) per channel
   const tang = (k) => {
@@ -42,21 +66,16 @@ function makeRamp() {
     return m;
   };
   const M = [tang(0), tang(1), tang(2)];
-  const d = new Uint16Array(RAMP_N * 4);
   for (let p = 0; p < RAMP_N; p++) {
     const u = p / (RAMP_N - 1), el = Math.asin(Math.min(1, u * u)) * 180 / Math.PI;
     let i = 0; while (i < n - 2 && el > xs[i + 1]) i++;
     const h = xs[i + 1] - xs[i], t = (el - xs[i]) / h, t2 = t * t, t3 = t2 * t;
     for (let k = 0; k < 3; k++) {
       const v = (2 * t3 - 3 * t2 + 1) * cs[i][k] + (t3 - 2 * t2 + t) * h * M[k][i] + (-2 * t3 + 3 * t2) * cs[i + 1][k] + (t3 - t2) * h * M[k][i + 1];
-      d[p * 4 + k] = THREE.DataUtils.toHalfFloat(v);
+      d[(row * RAMP_N + p) * 4 + k] = THREE.DataUtils.toHalfFloat(v);
     }
-    d[p * 4 + 3] = THREE.DataUtils.toHalfFloat(1);
+    d[(row * RAMP_N + p) * 4 + 3] = THREE.DataUtils.toHalfFloat(1);
   }
-  const t = new THREE.DataTexture(d, RAMP_N, 1, THREE.RGBAFormat, THREE.HalfFloatType);
-  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
-  t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true;
-  return t;
 }
 
 const VS = /* glsl */`
@@ -87,7 +106,21 @@ void main(){
   // they neither pinch at the zenith nor bend as the camera tilts
   vec4 hi = texture(uCloud, vec2(s.x * 0.94 + s.y * 0.34, s.y * 0.94 - s.x * 0.34) * vec2(0.05, 0.45) + 0.63);
   float h = d.y + (broad.r - 0.5) * 0.05 * smoothstep(-0.02, 0.12, d.y) + (pass.r - 0.5) * 0.018 * lay + (hi.r - 0.5) * 0.05 * (1.0 - lay) + (fine.g - 0.5) * 0.010;
-  vec3 c = texture(uRamp, vec2(sqrt(clamp(h, 0.0, 1.0)) * ${((RAMP_N - 1) / RAMP_N).toFixed(6)} + ${(0.5 / RAMP_N).toFixed(6)}, 0.5)).rgb;
+  float ru = sqrt(clamp(h, 0.0, 1.0)) * ${((RAMP_N - 1) / RAMP_N).toFixed(6)} + ${(0.5 / RAMP_N).toFixed(6)};
+  vec3 c = texture(uRamp, vec2(ru, mix(0.125, 0.875, uSnow))).rgb;
+  if (uEve > 0.0){
+    // which side of the sky: toward the low sun or away from it (a broad, uneven turn - the brush passes move it)
+    vec2 sh = normalize(uSunDir.xz);
+    float toSun = dot(normalize(d.xz + 1e-5), sh) + (broad.a - 0.5) * 0.30;
+    vec3 ce = mix(texture(uRamp, vec2(ru, 0.625)).rgb, texture(uRamp, vec2(ru, 0.375)).rgb, smoothstep(-0.55, 0.75, toSun));
+    // the sun itself is out of the picture's key: what shows is where it bleaches the wash - a wide pale
+    // yellow bloom low in the sky on its side
+    vec3 sv = normalize(vec3(sh.x, 0.16, sh.y));
+    float ang = acos(clamp(dot(d, sv), -1.0, 1.0));
+    float glow = exp(-ang * ang / 0.10) * 0.55 + exp(-ang * ang / 0.012) * 0.35;
+    ce = mix(ce, vec3(1.0, 0.975, 0.80), clamp(glow + (fine.g - 0.5) * 0.06 * glow, 0.0, 1.0) * smoothstep(-0.02, 0.05, d.y));
+    c = mix(c, ce, uEve);
+  }
   float sat = smoothstep(0.04, 0.30, h);
   c *= 1.0 + ((broad.g - 0.5) * mix(0.026, 0.014, lay) + (pass.g - 0.5) * 0.012 * lay + (hi.g - 0.5) * 0.045 * (1.0 - lay)) * sat + (fine.a - 0.5) * 0.014 * (0.35 + 0.65 * sat);
   // below the horizon: pale ground haze (normally hidden by terrain)
@@ -104,7 +137,7 @@ export function buildSky(scene, cloudTex) {
   window.__skyMs = performance.now() - t0;
   const g = new THREE.IcosahedronGeometry(1, 4);
   const m = mat({
-    vs: VS, fs: FS, side: THREE.BackSide,
+    vs: VS, fs: FS, side: THREE.BackSide, hour: false,
     uniforms: { uCloud: { value: cloudTex }, uRamp: { value: ramp } },
     extra: { depthWrite: false, depthTest: true },
   });

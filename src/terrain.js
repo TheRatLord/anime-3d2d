@@ -714,7 +714,7 @@ float groundShadow(vec3 wp){
   vec2 g = s.xy / pitch;
   vec2 c = floor(g) + 0.5, f = g - c;
   vec2 w0 = 0.5 * (0.5 - f) * (0.5 - f), w1 = 0.75 - f * f, w2 = 0.5 * (0.5 + f) * (0.5 + f);
-  float zr = s.z - 0.0016, lit = 0.0;
+  float zr = s.z - uShadowBias, lit = 0.0;
   for (int j = 0; j < 3; j++){
     float wy = j == 0 ? w0.y : (j == 1 ? w1.y : w2.y);
     float yy = (c.y + float(j - 1)) * pitch;
@@ -728,7 +728,7 @@ float groundShadow(vec3 wp){
 float groundShadowDeep(vec3 wp){
   vec4 sc = uShadowMat * vec4(wp, 1.0);
   vec3 s = sc.xyz * 0.5 + 0.5;
-  float zc = s.z - 0.0016, r = uShadowTexel;
+  float zc = s.z - uShadowBias, r = uShadowTexel;
   return 0.25 * (step(zc, textureLod(uShadowMap, s.xy + vec2( 6.6,  7.4) * r, 0.0).r)
                + step(zc, textureLod(uShadowMap, s.xy + vec2(-7.4,  6.6) * r, 0.0).r)
                + step(zc, textureLod(uShadowMap, s.xy + vec2(-6.6, -7.4) * r, 0.0).r)
@@ -980,6 +980,7 @@ void main(){
   float p1 = aastep(${HAZE[0][0].toFixed(1)}, rw), p2 = aastep(${HAZE[1][0].toFixed(1)}, rw), p3 = aastep(${HAZE[2][0].toFixed(1)}, rw);
 
   vec3 c = vec3(0.0);
+  float tLit = 1.0;
   if (p1 < 0.999){
     float grass;
     vec3 lit = groundPaint(vW, grass);
@@ -1173,6 +1174,7 @@ void main(){
     // shadow green, which turns yellow to khaki)
     shade = mix(shade, fcol * vec3(0.76, 0.69, 0.82), fm * 0.94);
     c = mix(shade, lit, t);
+    tLit = t;
 
     // the foot of the home hill: a slightly deeper band, so the hill ends on a firm edge against the valley
     c *= 1.0 - 0.035 * smoothstep(84.0, 108.0, rw);
@@ -1182,6 +1184,9 @@ void main(){
   if (p1 > 0.001) c = mix(c, valleyBands(farPaint(vW, max(rr, 60.0), pn), vW, max(rr, 60.0), rw), p1);
 
   // stepped haze (the shared table, src/glsl.js HAZE) toward uHazeCol
+  // (the season and the hour are laid before the air; on the hilltop the ground knows which side it painted)
+  if (p1 < 0.001) gLit = tLit;
+  c = hourOf(c);
   c = mix(c, uHazeCol, ${HAZE[0][1].toFixed(4)} * p1 + ${(HAZE[1][1] - HAZE[0][1]).toFixed(4)} * p2 + ${(HAZE[2][1] - HAZE[1][1]).toFixed(4)} * p3);
 
   oColor = vec4(c, 1.0);

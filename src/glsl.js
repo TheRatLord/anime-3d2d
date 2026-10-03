@@ -21,6 +21,9 @@ export const G = {
   uCamRight: { value: new THREE.Vector3(1, 0, 0) },
   uCamUp: { value: new THREE.Vector3(0, 1, 0) },
   uWindAmp: { value: 1 },       // overall wind strength (URL ?wind=0..2), read by WIND_GLSL
+  uEve: { value: 0 },           // time of day: 0 = the day the scene was painted for, 1 = evening (src/mode.js)
+  uSnow: { value: 0 },          // season: 0 = summer, 1 = under snow
+  uShadowBias: { value: 0.0016 },
 };
 
 // ---- wind: one shared world-space field for everything that moves in it (grass, flowers, leaves).
@@ -72,6 +75,52 @@ export const HAZE = [[110, 0.12], [230, 0.24], [380, 0.36], [739, 0.48], [1049, 
 export const HAZE_HOLD = +(typeof location !== 'undefined' && new URLSearchParams(location.search).get('hold') || 0.62);
 export const stepFog = (r) => { let a = 0; for (const [d, h] of HAZE) if (r >= d) a = h; return a; };
 export const STEP_FOG_GLSL = `float stepFog(float r){ return ${HAZE.map(([d, h], i) => `r < ${d.toFixed(1)} ? ${(i ? HAZE[i - 1][1] : 0).toFixed(2)} : `).join('')}${HAZE[HAZE.length - 1][1].toFixed(2)}; }`;
+// ---- season and hour (src/mode.js sets uSnow / uEve and the colours of the air).
+// Every colour in the scene is authored for a summer noon. The two other states are laid over that paint, in
+// one place, so that whatever is added to the scene falls under them:
+//  - snowLand(): whatever is GREEN (turf, leaf, wood, field) is under snow - the green's own value decides
+//    whether it is snow in the sun, snow in shade or the dark of a wood. Things that paint their own snow
+//    (the ground of the hilltop, the masonry, the big trees) never show green and pass through untouched.
+//  - evening(): the low sun. Lights go gold, shade goes rose-violet at nearly the same value (the two
+//    separate by hue), greens go olive. gLit = 1 / 0 where a material knows which side it painted, -1 where
+//    the colour itself has to tell (warm and pale = in the sun).
+// hourOf() is both, once per fragment: atmo() calls it BEFORE the air is laid (the air has the hour's own
+// colour), and mat() calls it at the end of every fragment shader that did not go through atmo().
+const MODE_GLSL = /* glsl */`
+float gLit = -1.0;
+bool gHour = false;
+const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+const vec3 SNOW_L = vec3(0.972, 0.972, 0.965);    // snow in the sun: paper white, a breath warm
+const vec3 SNOW_S = vec3(0.690, 0.760, 0.900);    // snow in shade: the blue of the sky lying on it
+const vec3 SNOW_D = vec3(0.560, 0.640, 0.830);    // ... and its deeper tone
+const vec3 SNOW_W = vec3(0.400, 0.420, 0.500);    // the dark of a winter wood
+vec3 snowLand(vec3 c){
+  if (uSnow <= 0.0) return c;
+  float gr = c.g - max(c.r, c.b);
+  float l = dot(c, LUMA);
+  vec3 s = mix(SNOW_W, SNOW_S, smoothstep(0.40, 0.50, l));
+  s = mix(s, SNOW_L, smoothstep(0.60, 0.67, l));
+  return mix(c, s, uSnow * smoothstep(0.012, 0.045, gr));
+}
+vec3 evening(vec3 c){
+  if (uEve <= 0.0) return c;
+  float l = dot(c, LUMA);
+  float lit = gLit >= 0.0 ? gLit : smoothstep(-0.06, 0.10, c.r - c.b + (l - 0.55) * 0.6);
+  float gr = max(c.g - max(c.r, c.b), 0.0);
+  vec3 o = c;
+  o.g -= gr * mix(0.30, 0.40, lit);                                    // green toward olive
+  // (a green in the low sun is a step DOWN as well: olive, not sand)
+  vec3 L = o * vec3(1.000, 0.860, 0.660) * (1.0 - min(gr * 2.0, 0.20));
+  L = mix(vec3(dot(L, LUMA)), L, 0.94) + vec3(0.020, 0.000, 0.000);
+  vec3 S = o * vec3(0.920, 0.740, 0.800) + vec3(0.045, 0.012, 0.030);
+  return mix(c, mix(S, L, lit), uEve);
+}
+vec3 hourOf(vec3 c){
+  if (gHour) return c;
+  gHour = true;
+  return evening(snowLand(c));
+}
+`;
 // the subject of the picture (src/world.js SUBJECT), for every shader
 const SHARED_GLSL = /* glsl */`
 const vec3 SUBJECT = vec3(${f(SUBJECT.x)}, ${f(SUBJECT.y)}, ${f(SUBJECT.z)});
@@ -91,6 +140,7 @@ uniform float uTime;
 uniform vec3 uCamPos;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
+uniform float uEve, uSnow;
 ${SHARED_GLSL}
 float hash11(float p){ p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
 `;
@@ -111,7 +161,9 @@ uniform float uShadowTexel;
 uniform vec3 uHazeCol;
 uniform vec3 uHazeFarCol;
 uniform vec3 uShadowTint;
+uniform float uEve, uSnow, uShadowBias;
 ${SHARED_GLSL}
+${MODE_GLSL}
 float aastep(float th, float v){ float w = max(fwidth(v), 1e-4); return smoothstep(th - w, th + w, v); }
 
 float hash11(float p){ p = fract(p * .1031); p *= p + 33.33; p *= p + p; return fract(p); }
@@ -163,7 +215,7 @@ float shadowLit(vec3 wp, float radius){
     vec2( 0.507, 0.064), vec2( 0.896, 0.412), vec2(-0.322,-0.933), vec2(-0.792,-0.598));
   for (int i = 0; i < 12; i++){
     float d = texture(uShadowMap, s.xy + P[i] * r).r;
-    lit += step(s.z - 0.0016, d);
+    lit += step(s.z - uShadowBias, d);
   }
   return lit / 12.0;
 }
@@ -182,6 +234,7 @@ float toneStep(float v, float th, float noise, float amp){
 // light and dark however pale it is. HAZE_HOLD = the share of the air a dark takes.
 const float HAZE_HOLD = ${f(HAZE_HOLD)};
 vec3 atmo(vec3 c, float amount){
+  c = hourOf(c);
   vec3 h = mix(uHazeCol, uHazeFarCol, smoothstep(0.3, 0.9, amount));
   float l = dot(c, vec3(0.299, 0.587, 0.114));
   return mix(c, h, amount * mix(HAZE_HOLD, 1.0, smoothstep(0.34, 0.62, l)));
@@ -193,7 +246,12 @@ void writeAux(vec3 n, float lineW, float depth, float id, float plane, float fla
 }
 `;
 
-export function mat({ vs, fs, uniforms = {}, defines = {}, side = THREE.FrontSide, extra = {} }) {
+// (hour: false = the material paints its own season and hour - the sky, the clouds)
+export function mat({ vs, fs, uniforms = {}, defines = {}, side = THREE.FrontSide, extra = {}, hour = true }) {
+  if (hour) {
+    if (!/void\s+main\s*\(\s*\)/.test(fs)) throw new Error('mat(): no main() in the fragment shader');
+    fs = fs.replace(/void\s+main\s*\(\s*\)/, 'void paintMain()') + '\nvoid main(){ paintMain(); oColor.rgb = hourOf(oColor.rgb); }\n';
+  }
   return new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
     vertexShader: HEAD + VS_COMMON + vs,

@@ -115,7 +115,7 @@ float shadowSpline(vec3 wp, vec3 n, vec2 warp){
     for (int i = 0; i < 3; i++){
       float wx = i == 0 ? w0.x : (i == 1 ? w1.x : w2.x);
       vec2 q = q0 + vec2(float(i - 1), float(j - 1)) * pitch;
-      float zr = s.z + dot(grad, q - s.xy) - 0.0016;
+      float zr = s.z + dot(grad, q - s.xy) - uShadowBias;
       lit += wy * wx * step(zr, texture(uShadowMap, q).r);
     }
   }
@@ -805,6 +805,7 @@ void main(){
   // pigment granulation, a different grain on every depth plane: the near plane carries the coarse
   // world-fixed bristle of the brush, the middle a finer screen-sized one, the back plane almost none
   c *= 1.0 + (pt.b - 0.5) * mix(0.05, 0.012, smoothstep(0.1, 0.9, pl)) * uPlaneAmt;
+  gLit = t;
   c = atmo(c, uFog);
   oColor = vec4(c, 1.0);
   // oNormal.a = how the outline here should be drawn: 0 = a broken, irregular edge (full hand

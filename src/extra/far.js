@@ -712,6 +712,7 @@ void main(){
   vec3 c = farPaint(vW, rr, pn);
   // the terrain ends on its third haze step (0.36 toward uHazeCol); two more firm, brush-warped rings follow
   float amt = 0.36 + 0.12 * aastep(739.0, rw) + 0.10 * aastep(1049.0, rw);
+  c = hourOf(c);
   c = mix(c, mix(uHazeCol, uHazeFarCol, smoothstep(0.36, 0.9, amt)), amt);
   oColor = vec4(c, 1.0);
   writeAux(vec3(0., 1., 0.), 0.0, vDepth, 0.011, 0.0, 0.0);
@@ -888,6 +889,10 @@ void main(){
   float yy = vUv.y + nb * uK.z;
   c = mix(c, mix(uCol, uCol2, 0.5), aastep(0.0, vS.z - yy - nb * uK.z * 0.6));
   c = mix(c, uCol2, aastep(uK.z * 0.04, min(yy - vS.y, vS.x - yy)));
+  // (the hour: a range is one plane of the evening air - its two tones stay a step apart and both go to the
+  // rose of the far air, never one gold and one violet)
+  gLit = 0.45; c = hourOf(c);
+  c = mix(c, uHazeFarCol * vec3(0.80, 0.76, 0.86), 0.42 * uEve);
   vec3 c0 = c;
   c = mix(c, mix(c0, uHazeFarCol, 0.30), aastep(0.0, 0.21 + w2 - vUv.y) * uR.y);
   c = mix(c, mix(c0, uHazeFarCol, 0.60), aastep(0.0, 0.085 + w1 - vUv.y) * uR.y);

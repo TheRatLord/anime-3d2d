@@ -377,8 +377,8 @@ void main(){
 // ---- 5. final: bloom add, grade, paper grain, vignette
 const FINAL_FS = /* glsl */`
 in vec2 vUv; out vec4 o;
-uniform sampler2D tSrc, tBloom, tPaper, tRaw, tNormal, tAux;
-uniform vec2 uRes; uniform float uBloom, uGrain, uVignette; uniform int uMode; uniform vec3 uSunDir;
+uniform sampler2D tSrc, tBloom, tPaper, tRaw, tNormal, tAux, tHold;
+uniform vec2 uRes; uniform float uBloom, uGrain, uVignette, uHold; uniform int uMode; uniform vec3 uSunDir;
 void main(){
   if (uMode == 1) { o = vec4(texture(tRaw, vUv).rgb, 1.0); return; }            // paint, before filter/ink/photography
   if (uMode >= 2) {
@@ -401,6 +401,8 @@ void main(){
   vec2 q = vUv - 0.5;
   float v = smoothstep(0.35, 0.95, length(q * vec2(1.0, 0.85)) * 1.25);
   c = mix(c, c * vec3(0.84, 0.88, 0.95), v * uVignette);
+  // a change of hour or season: the picture that stood before it, dissolving out (see snapshot())
+  if (uHold > 0.0) c = mix(c, texture(tHold, vUv).rgb, uHold);
   o = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
 `;
@@ -442,13 +444,14 @@ export class Pipeline {
       tSrc: { value: null }, tBloom: { value: null }, tPaper: { value: null }, tRaw: { value: null }, tNormal: { value: null }, tAux: { value: null },
       uMode: { value: 0 }, uSunDir: G.uSunDir,
       uRes: { value: new THREE.Vector2() }, uBloom: { value: 0.5 }, uGrain: { value: 0.1 }, uVignette: { value: 0.5 },
+      tHold: { value: null }, uHold: { value: 0 },
     });
   }
 
   setSize(w, h) {
     this.w = w; this.h = h;
     const dispose = (t) => t && t.dispose();
-    [this.gbuf, this.rtA, this.rtB, this.q1, this.q2, this.b1, this.b2].forEach(dispose);
+    [this.gbuf, this.rtA, this.rtB, this.q1, this.q2, this.b1, this.b2, this.hold].forEach(dispose);
     this.gbuf = new THREE.WebGLRenderTarget(w, h, { count: 3, samples: this.p.msaa, depthBuffer: true, type: THREE.UnsignedByteType });
     this.gbuf.textures[2].type = THREE.HalfFloatType;
     for (const t of this.gbuf.textures) { t.minFilter = t.magFilter = THREE.LinearFilter; t.generateMipmaps = false; }
@@ -460,7 +463,8 @@ export class Pipeline {
       t.texture.minFilter = t.texture.magFilter = THREE.LinearFilter; t.texture.generateMipmaps = false;
       return t;
     };
-    this.rtA = mk(w, h); this.rtB = mk(w, h);
+    this.rtA = mk(w, h); this.rtB = mk(w, h); this.hold = mk(w, h);
+    this.final.uniforms.tHold.value = this.hold.texture; this.final.uniforms.uHold.value = 0;
     const qw = Math.max(2, w >> 2), qh = Math.max(2, h >> 2);
     this.q1 = mk(qw, qh, THREE.HalfFloatType); this.q2 = mk(qw, qh, THREE.HalfFloatType);
     this.b1 = mk(qw, qh); this.b2 = mk(qw, qh);
@@ -471,6 +475,16 @@ export class Pipeline {
     this.tri.material = material;
     this.r.setRenderTarget(target);
     this.r.render(this.fsScene, this.fsCam);
+  }
+
+  // keeps the finished picture of the last frame (its inputs are still in the targets), for the final pass to
+  // dissolve out of
+  snapshot() {
+    const fu = this.final.uniforms, h = fu.uHold.value;
+    if (!fu.tSrc.value) return;
+    fu.uHold.value = 0; fu.tHold.value = null;
+    this._fs(this.final, this.hold);
+    fu.tHold.value = this.hold.texture; fu.uHold.value = h;
   }
 
   renderShadow(scene, sunDir, center) {

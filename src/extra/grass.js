@@ -24,6 +24,7 @@
 // changes), so the vertex shader sees a few thousand instances instead of ~270 000.
 import * as THREE from 'three';
 import { G, mat, WIND_GLSL } from '../glsl.js';
+import { onSun, sunKey } from '../mode.js';
 import { rng, height, smooth, onSlab, vnoise, alongPath, PATH_LEN, floorRect, inRect, SUBJECT } from '../world.js';
 import { LAYOUT, composed, added } from '../layout.js';
 import { GRASS_GLSL, FLOWER_HUE_GLSL, FLOWER_COLS, GROUND_UNIFORMS, GMAP, meadowAt, pathEdge, pathInfo, flowerDrift, flowerFam, bloomGather, BAND_SHARE, massRaw, massExtra, MASS2_BOX } from '../terrain.js';
@@ -1286,7 +1287,7 @@ export default function (scene) {
     renderer.setRenderTarget(prev);
     rt.dispose(); m.dispose(); tri.geometry.dispose();
     const depth = (u, v) => { const i = (v * N + u) * 4; return px[i] / 255 + px[i + 1] / 65025 + px[i + 2] / 16581375; };
-    const e = G.uShadowMat.value.elements;
+    const e = G.uShadowMat.value.elements, BIAS = G.uShadowBias.value;
     const P = [[0, 0], [-3.0, -1.6], [2.6, -3.0], [3.0, 2.0], [-2.0, 3.0], [-8.6, 2.4], [1.8, -8.8], [8.4, -2.0], [-2.6, 8.6], [5.6, 5.4], [-5.8, -5.2], [5.2, -5.8], [-5.4, 5.6]];
     const litAt = (x, y, z, rnd) => {
       const sx = (e[0] * x + e[4] * y + e[8] * z + e[12]) * 0.5 + 0.5, sy = (e[1] * x + e[5] * y + e[9] * z + e[13]) * 0.5 + 0.5;
@@ -1295,7 +1296,7 @@ export default function (scene) {
       let lit = 0;
       for (const p of P) {
         const u = Math.min(N - 1, Math.max(0, Math.floor(sx * N + p[0]))), v = Math.min(N - 1, Math.max(0, Math.floor(sy * N + p[1])));
-        if (depth(u, v) >= sz - 0.0016) lit++;
+        if (depth(u, v) >= sz - BIAS) lit++;
       }
       const th = 0.5 + (rnd - 0.5) * 0.36;
       return smooth(th - 0.14, th + 0.14, lit / P.length);
@@ -1319,7 +1320,7 @@ export default function (scene) {
           const sx = (e[0] * x + e[4] * y + e[8] * z + e[12]) * 0.5 + 0.5, sy = (e[1] * x + e[5] * y + e[9] * z + e[13]) * 0.5 + 0.5;
           if (sx < 0.0 || sx > 1.0 || sy < 0.0 || sy > 1.0) continue;
           const sz = (e[2] * x + e[6] * y + e[10] * z + e[14]) * 0.5 + 0.5;
-          if (depth(Math.min(N - 1, Math.floor(sx * N)), Math.min(N - 1, Math.floor(sy * N))) < sz - 0.0014) { sh = 1; break; }
+          if (depth(Math.min(N - 1, Math.floor(sx * N)), Math.min(N - 1, Math.floor(sy * N))) < sz - (BIAS - 0.0002)) { sh = 1; break; }
         }
         may[j * MC + i] = sh;
       }
@@ -1348,6 +1349,27 @@ export default function (scene) {
     return shaded;
   };
 
+  // The sun stands in one of two places (src/mode.js). What is baked from its map - the light of every instance
+  // and the ground's sun mask - is baked once per place and kept, so going back and forth costs nothing.
+  const sunKept = {};
+  const sunBake = (renderer, key) => {
+    const k = sunKept[key];
+    if (k) {
+      fields.forEach((f, fi) => { const a = k.lit[fi]; for (let i = 0; i < f.total; i++) f.src[i * STRIDE + 7] = a[i]; f.invalidate(); });
+      for (let i = 0; i < MN_ * MN_; i++) gdata[i * 4 + 3] = k.mask[i];
+      gtex.needsUpdate = true;
+      return;
+    }
+    const t0 = performance.now();
+    const n = bake(renderer);
+    sunKept[key] = {
+      lit: fields.map((f) => { const a = new Float32Array(f.total); for (let i = 0; i < f.total; i++) a[i] = f.src[i * STRIDE + 7]; return a; }),
+      mask: (() => { const a = new Uint8Array(MN_ * MN_); for (let i = 0; i < MN_ * MN_; i++) a[i] = gdata[i * 4 + 3]; return a; })(),
+    };
+    console.info(`[grass] baked the sun term (${key}) of ${tufts.total + flowers.total + strokes.total} instances (${n} in shade) in ${(performance.now() - t0).toFixed(0)} ms`);
+  };
+  onSun((renderer, key) => { if (baked) sunBake(renderer, key); });
+
   // ---------------------------------------------------------------- per-frame hook
   let baked = false, bakeQueued = false;
   const lastCam = new Float64Array(19).fill(NaN);
@@ -1357,12 +1379,7 @@ export default function (scene) {
     if (!camera.isPerspectiveCamera) return;                 // (the sun shadow pass)
     if (!baked && !bakeQueued) {
       bakeQueued = true;
-      requestAnimationFrame(() => {
-        const t0 = performance.now();
-        const n = bake(renderer);
-        baked = true;
-        console.info(`[grass] baked the sun term of ${tufts.total + flowers.total + strokes.total} instances (${n} in shade) in ${(performance.now() - t0).toFixed(0)} ms`);
-      });
+      requestAnimationFrame(() => { sunBake(renderer, sunKey()); baked = true; });
     }
     // (nothing to choose again while the eye stands still)
     _m4.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);

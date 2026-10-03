@@ -9,6 +9,7 @@ import { buildTerrain } from './terrain.js';
 import { buildSky } from './sky.js';
 import { buildRuin } from './ruin.js';
 import { VIEWS } from './views.js';
+import { MODE, setMode, sunDir, sunPainted } from './mode.js';
 
 const params = {
   msaa: 4, kuwahara: 3, line: 0.8, quiet: 1, counter: 1, bloom: 0.3, grain: 0.035, vignette: 0.2,
@@ -20,6 +21,8 @@ const params = {
 };
 const q = new URLSearchParams(location.search);
 for (const k of Object.keys(params)) if (q.has(k)) params[k] = parseFloat(q.get(k));
+// the hour and the season the picture opens in: ?eve=1 (or ?time=evening), ?snow=1 (or ?season=winter)
+setMode({ eve: q.get('eve') === '1' || /^eve/.test(q.get('time') ?? ''), snow: q.get('snow') === '1' || /^(snow|winter)/.test(q.get('season') ?? '') });
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
@@ -30,7 +33,6 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(params.fov, 1, 0.3, 6000);
 
 G.uBrush.value = makeBrushTexture();
-G.uSunDir.value.copy(SUN);
 const cloudTex = makeCloudTexture();
 const tex = { cloud: cloudTex, leaf: makeLeafAtlas(), grass: makeGrassAtlas(), paper: makePaperTexture() };
 
@@ -112,7 +114,7 @@ addEventListener('keydown', (e) => {
 let viewIdx = 0;
 const hud = document.createElement('div');
 hud.style.cssText = 'position:fixed;left:14px;bottom:12px;color:#fff;font:12px/1.5 system-ui,sans-serif;text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none;white-space:pre;opacity:.9';
-hud.textContent = 'click to look · WASD move · Shift run · F fly (Q/E down/up) · V next viewpoint\n1 painted · 2 paint only · 3 underlying 3D · 4 normals · 5 depth · K paint filter · L lines · [ ] lens · T telephoto (auto/off/0.35/0.7) · G upright verticals · H hide';
+hud.textContent = 'click to look · WASD move · Shift run · F fly (Q/E down/up) · V next viewpoint\n1 painted · 2 paint only · 3 underlying 3D · 4 normals · 5 depth · K paint filter · L lines · [ ] lens · T telephoto (auto/off/0.35/0.7) · G upright verticals · H hide\nN day / evening · M summer / winter';
 document.body.appendChild(hud);
 if (!params.hud) hud.style.display = 'none';
 addEventListener('keyup', (e) => { keys[e.code] = false; });
@@ -278,8 +280,11 @@ function frame(now) {
   G.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
   G.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
 
-  // nothing that casts a shadow moves (leaf shadows are held still), so the sun map is painted once
-  if (stat.frames < 8) pipe.renderShadow(scene, SUN, new THREE.Vector3(0, 0, 4));
+  // nothing that casts a shadow moves (leaf shadows are held still), so the sun map is painted once -
+  // and once more whenever the hour changes (then whatever was baked from it follows: sunPainted)
+  if (stat.frames < 8) pipe.renderShadow(scene, sunDir(), new THREE.Vector3(0, 0, 4));
+  else if (sunMoved) { pipe.renderShadow(scene, sunDir(), new THREE.Vector3(0, 0, 4)); sunPainted(renderer); sunMoved = false; }
+  if (hold > 0) { hold = Math.max(0, hold - dt / DISSOLVE); pipe.final.uniforms.uHold.value = hold * hold * (3 - 2 * hold); }
   pipe.render(scene, camera);
   if (stat.frames === 1) {
     performance.mark('scene-ready');
@@ -289,7 +294,42 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 
+// ---------------------------------------------------------------- the hour and the season
+// A change is a dissolve, the way a film goes from one painting of a place to the next: the picture as it
+// stands is held and the new one comes up through it (the sun map and what is baked from it are painted
+// again under the hold, on the first frame).
+const DISSOLVE = 1.1;
+let hold = 0, sunMoved = false;
+function changeMode(m, instant = false) {
+  if (!instant && stat.frames > 8) { pipe.snapshot(); hold = 1; pipe.final.uniforms.uHold.value = 1; }
+  if (setMode(m)) sunMoved = true;
+  for (const [k, b] of Object.entries(modeBtn)) { b.textContent = LABEL[k][MODE[k]]; b.setAttribute('aria-pressed', MODE[k] ? 'true' : 'false'); }
+}
+const LABEL = { eve: ['☀ Day', '☾ Evening'], snow: ['✿ Summer', '❄ Winter'] };
+const modeBtn = {};
+{
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;right:14px;top:12px;display:flex;gap:8px;font:13px/1 system-ui,sans-serif;z-index:5';
+  for (const k of ['eve', 'snow']) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.title = k === 'eve' ? 'Time of day (N)' : 'Season (M)';
+    b.style.cssText = 'appearance:none;border:1px solid rgba(255,255,255,.55);border-radius:999px;padding:8px 14px;min-width:96px;color:#fff;background:rgba(40,52,60,.38);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);text-shadow:0 1px 2px rgba(0,0,0,.45);cursor:pointer;font:inherit';
+    b.addEventListener('click', (e) => { e.stopPropagation(); changeMode({ [k]: 1 - MODE[k] }); b.blur(); });
+    modeBtn[k] = b; bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+  if (!params.hud) bar.style.display = 'none';
+  addEventListener('keydown', (e) => {
+    if (e.code === 'KeyN') changeMode({ eve: 1 - MODE.eve });
+    if (e.code === 'KeyM') changeMode({ snow: 1 - MODE.snow });
+    if (e.code === 'KeyH') bar.style.display = params.hud ? '' : 'none';
+  });
+  changeMode({}, true);
+}
+
 window.__app = {
+  MODE, setMode: (m) => changeMode(m, true),
   params, state, stat, lens, scene, camera, renderer, pipe, VIEWS, setView,
   view: (name) => setView(VIEWS[name]),
   freeze: (t) => { frozen = t; },

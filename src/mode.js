@@ -31,19 +31,18 @@ const AIR = {
 
 export const MODE = { eve: 0, snow: 0 };
 const sunHooks = [], changeHooks = [];
-// fn(renderer, key): the sun map has just been painted for the hour `key` ('day' | 'eve')
+// fn(renderer, key): the sun map of the state `key` (see sunKey) has just become the current one
 export const onSun = (fn) => { sunHooks.push(fn); };
 // fn(MODE): the hour or the season has changed
 export const onMode = (fn) => { changeHooks.push(fn); };
 
 export const sunDir = () => (MODE.eve ? SUN_EVE : SUN);
-export const sunKey = () => (MODE.eve ? 'eve' : 'day');
+// (the sun map differs by season too: the bare winter crowns throw the shadow of their boughs only)
+export const sunKey = (m = MODE) => `${m.eve ? 'eve' : 'day'}${m.snow ? '-snow' : ''}`;
 
-// Sets the uniforms of a state. Returns true if the sun moved (the caller paints the sun map again and then
-// calls sunPainted()).
+// Sets the uniforms of a state (the caller then makes that state's sun map current and calls sunPainted()).
 export function setMode({ eve = MODE.eve, snow = MODE.snow } = {}) {
   eve = eve ? 1 : 0; snow = snow ? 1 : 0;
-  const moved = eve !== MODE.eve;
   MODE.eve = eve; MODE.snow = snow;
   G.uEve.value = eve; G.uSnow.value = snow;
   const air = AIR[`${eve}${snow}`];
@@ -52,6 +51,5 @@ export function setMode({ eve = MODE.eve, snow = MODE.snow } = {}) {
   // (a low sun rakes the ground: the depth test of the sun map needs more room there)
   G.uShadowBias.value = eve ? 0.0030 : 0.0016;
   for (const fn of changeHooks) fn(MODE);
-  return moved;
 }
 export function sunPainted(renderer) { for (const fn of sunHooks) fn(renderer, sunKey()); }

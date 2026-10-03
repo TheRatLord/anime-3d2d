@@ -13,7 +13,8 @@ npm run dev
 
 The scene can be seen at two hours (the day it was painted for, and evening) and in two seasons (summer, and
 under snow) - four pictures of the same place. Toggle with the buttons at the top right or `N` (day / evening)
-and `M` (summer / winter); a change is a short dissolve. To open in a given state: `?time=evening`,
+and `M` (summer / winter); a change is a short dissolve that keeps up with the camera (both states are drawn
+for that second). The four states are baked once behind the loading screen (`?prebake=0` skips that). To open in a given state: `?time=evening`,
 `?season=winter` (or `?eve=1&snow=1`). `?flakes=0` leaves out the falling snow.
 
 Everything is still authored for the summer day; `src/mode.js` and the "season and hour" contract at the top of

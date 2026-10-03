@@ -704,6 +704,15 @@ vec3 snowGround(vec3 wp, float dist, float grass, float mass, float core, float 
   s = mix(s, vec3(0.855, 0.895, 0.962), hollow * 0.9);
   // ... and the crest beside a hollow, the whitest white
   s = mix(s, vec3(0.992, 0.990, 0.982), aastep(0.335, 0.70 - m + (wn.a - 0.5) * 0.06) * (1.0 - gate) * 0.9);
+  // DEEP snow lies in banks: big rounded swells a few metres across with a shaded flank away from the sun - one
+  // flat blue step with a brushed edge, on a slow field of the ground (the relief of a drift, painted)
+  {
+    vec2 sd = normalize(uSunDir.xz);
+    float b0 = texture(uBrush, p / 13.0 + 0.71).a, b1 = texture(uBrush, (p + sd * 0.9) / 13.0 + 0.71).a;
+    float flank = aastep(0.030, (b0 - b1) + (wn.a - 0.5) * 0.018 + (wn.g - 0.5) * 0.008) * smoothstep(0.50, 0.62, b0 + 0.08);
+    s = mix(s, vec3(0.800, 0.852, 0.948), flank * 0.9 * (1.0 - 0.5 * upv));
+    s = mix(s, vec3(0.995, 0.994, 0.988), aastep(0.035, (b1 - b0) + (wn.r - 0.5) * 0.015) * 0.8);
+  }
   // where the tall grass stood: rougher snow, a step bluer, deeper dabs toward its core
   s = mix(s, vec3(0.890, 0.920, 0.968), mass * 0.85 * (1.0 - 0.4 * upv));
   s = mix(s, vec3(0.800, 0.850, 0.945), core * 0.75 * (1.0 - 0.6 * upv));
@@ -732,7 +741,9 @@ vec3 snowGround(vec3 wp, float dist, float grass, float mass, float core, float 
     d = mix(d, vec3(0.690, 0.735, 0.875), rut * step(0.30, st2.a) * 0.9);
     float bare = 1.0 - smoothstep(0.03, 0.08, abs(pi.x - 0.52 - (st2.g - 0.5) * 0.18));
     d = mix(d, vec3(0.600, 0.545, 0.585), bare * step(0.60, st2.a) * step(0.50, st) * step(0.45, texture(uBrush, q * vec2(1.0 / 3.1, 1.0 / 1.3) + 0.17).r) * 0.85);
-    s = mix(d, s, grass);
+    // (deep snow: the track is drifted over in stretches - only parts of it are trodden through)
+    float open = smoothstep(0.34, 0.50, texture(uBrush, vec2(pi.y / 23.0, 0.37)).a + (st2.r - 0.5) * 0.2);
+    s = mix(mix(s, d, open * 0.9 + 0.1), s, grass);
   }
   return s;
 }

@@ -419,12 +419,10 @@ export class Pipeline {
     this.fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
     // sun shadow
-    const S = 4096;
-    this.shadowRT = new THREE.WebGLRenderTarget(S, S, { depthBuffer: true });
-    this.shadowRT.depthTexture = new THREE.DepthTexture(S, S, THREE.UnsignedIntType);
-    this.shadowRT.depthTexture.minFilter = this.shadowRT.depthTexture.magFilter = THREE.NearestFilter;
+    // (two maps at most: the state that is shown and, during a change of hour or season, the one it comes from;
+    // each is painted when its state is first wanted and repainted if its slot was given to another meanwhile)
+    this.shadowSlots = []; this.shadowTick = 0;
     this.shadowCam = new THREE.OrthographicCamera(-50, 50, 50, -50, 1, 260);
-    G.uShadowMap.value = this.shadowRT.depthTexture;
     G.uShadowTexel.value = 1 / 2048;   // blur step in UV: kept at ~5 cm of world regardless of map resolution
 
     this.kuw = pass(KUWAHARA_FS, { tColor: { value: null }, tAux: { value: null }, uTexel: { value: new THREE.Vector2() }, uRadius: { value: 3 },
@@ -477,37 +475,51 @@ export class Pipeline {
     this.r.render(this.fsScene, this.fsCam);
   }
 
-  // keeps the finished picture of the last frame (its inputs are still in the targets), for the final pass to
-  // dissolve out of
-  snapshot() {
-    const fu = this.final.uniforms, h = fu.uHold.value;
-    if (!fu.tSrc.value) return;
-    fu.uHold.value = 0; fu.tHold.value = null;
-    this._fs(this.final, this.hold);
-    fu.tHold.value = this.hold.texture; fu.uHold.value = h;
+  // Makes the sun map of the state `key` the current one (G.uShadowMap / G.uShadowMat), painting it if no slot
+  // holds it (or if `force`). Returns true if it was painted. `keep` is a key whose slot must not be taken.
+  shadowFor(key, keep, scene, sunDir, center, force = false) {
+    let slot = this.shadowSlots.find((q) => q.key === key), painted = false;
+    if (!slot) {
+      if (this.shadowSlots.length < 2) {
+        const S = 4096, rt = new THREE.WebGLRenderTarget(S, S, { depthBuffer: true });
+        rt.depthTexture = new THREE.DepthTexture(S, S, THREE.UnsignedIntType);
+        rt.depthTexture.minFilter = rt.depthTexture.magFilter = THREE.NearestFilter;
+        slot = { rt, mat: new THREE.Matrix4(), used: 0 };
+        this.shadowSlots.push(slot);
+      } else slot = this.shadowSlots.filter((q) => q.key !== keep).sort((a, b) => a.used - b.used)[0];
+      slot.key = key; force = true;
+    }
+    slot.used = ++this.shadowTick;
+    if (force) { this.renderShadow(scene, sunDir, center, slot); painted = true; }
+    G.uShadowMap.value = slot.rt.depthTexture;
+    G.uShadowMat.value.copy(slot.mat);
+    return painted;
   }
 
-  renderShadow(scene, sunDir, center) {
+  renderShadow(scene, sunDir, center, slot) {
     const cam = this.shadowCam;
     cam.position.copy(center).addScaledVector(sunDir, 120);
     cam.up.set(0, 1, 0);
     cam.lookAt(center);
     cam.updateMatrixWorld(true);
     cam.updateProjectionMatrix();
-    G.uShadowMat.value.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    slot.mat.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    G.uShadowMat.value.copy(slot.mat);
     const swapped = [];
     scene.traverse((o) => {
       if (!o.isMesh) return;
       swapped.push([o, o.material, o.visible]);
       if (o.userData.shadowMat) o.material = o.userData.shadowMat; else o.visible = false;
     });
-    this.r.setRenderTarget(this.shadowRT);
+    this.r.setRenderTarget(slot.rt);
     this.r.clear();
     this.r.render(scene, cam);
     for (const [o, m, v] of swapped) { o.material = m; o.visible = v; }
   }
 
-  render(scene, camera) {
+  // toHold: the finished picture goes to the hold target instead of the screen (the state a change comes from;
+  // the next render dissolves out of it by uHold)
+  render(scene, camera, toHold = false) {
     const p = this.p, r = this.r;
     r.setRenderTarget(this.gbuf);
     r.setClearColor(0x000000, 0);
@@ -558,6 +570,7 @@ export class Pipeline {
     fu.tSrc.value = this.rtB.texture; fu.tBloom.value = this.b1.texture;
     fu.tRaw.value = this.gbuf.textures[0]; fu.tNormal.value = this.gbuf.textures[1]; fu.tAux.value = this.gbuf.textures[2]; fu.uMode.value = p.mode | 0;
     fu.uRes.value.set(this.w, this.h); fu.uBloom.value = p.bloom; fu.uGrain.value = p.grain; fu.uVignette.value = p.vignette;
-    this._fs(this.final, null);
+    if (toHold) { const h = fu.uHold.value; fu.uHold.value = 0; fu.tHold.value = null; this._fs(this.final, this.hold); fu.tHold.value = this.hold.texture; fu.uHold.value = h; }
+    else this._fs(this.final, null);
   }
 }

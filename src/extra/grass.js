@@ -121,7 +121,7 @@ void main(){
   // runs of tall grass, some of the fringe along the track and at the foot of things, a few big tufts of the
   // masses - dry straw now, each a little shorter for the snow round its foot.
   if (uSnow > 0.5){
-    float keep = cat < 1.5 ? 0.30 : cat < 2.5 ? 0.34 : cat < 3.5 ? 0.0 : cat < 4.5 ? 0.05 : cat < 5.5 ? 0.85 : cat < 6.5 ? 0.30 : 0.0;
+    float keep = cat < 1.5 ? 0.16 : cat < 2.5 ? 0.14 : cat < 3.5 ? 0.0 : cat < 4.5 ? 0.0 : cat < 5.5 ? 0.80 : cat < 6.5 ? 0.14 : 0.0;
     // (they stand in clumps, not evenly: a slow field of the ground lets a stretch keep more and the next none)
     keep *= 2.0 * smoothstep(0.30, 0.70, texture(uBrush, iPos.xz / 17.0 + 0.43).a);
     if (fract(rnd * 61.7 + rnd2 * 3.1) > keep){ gl_Position = CULL; return; }
@@ -175,7 +175,7 @@ void main(){
     float swayK = smoothstep(${SWAY_PX}, 0.05 * size / (dist * uPixelK)) * step(fract(rnd * 7.31), 0.5);
     // (the flutter is each tuft's own; it quickens a little in a gust and is small in the calm)
     q.x += sin(uTime * 1.6 + ph) * 0.05 * by * by * swayK * (${WIND_K.flutter0} * min(uWindAmp, 1.0) + ${WIND_K.flutter1} * wS);
-    q *= size * vec2(1.0, duck * mix(0.6, 1.0, wUp));
+    q *= size * vec2(1.0, duck * mix(0.6, 1.0, wUp) * (1.0 - 0.38 * uSnow));       // (winter: half buried)
     vBy = by;
     float hl = length(toCam.xz);
     vec3 Rv = hl > 1e-4 ? vec3(toCam.z, 0.0, -toCam.x) / hl : vec3(1.0, 0.0, 0.0);
@@ -1381,17 +1381,19 @@ export default function (scene) {
   const sunBake = (renderer, key) => {
     const k = sunKept[key];
     if (k) {
-      fields.forEach((f, fi) => { const a = k.lit[fi]; for (let i = 0; i < f.total; i++) f.src[i * STRIDE + 7] = a[i]; f.invalidate(); });
-      for (let i = 0; i < MN_ * MN_; i++) gdata[i * 4 + 3] = k.mask[i];
-      gtex.needsUpdate = true;
+      fields.forEach((f, fi) => { const a = k.lit[fi], src = f.src; for (let i = 0, o = 7; i < f.total; i++, o += STRIDE) src[o] = a[i]; f.invalidate(); });
+      GROUND_UNIFORMS.uContact.value = k.tex;
       return;
     }
     const t0 = performance.now();
     const n = bake(renderer);
-    sunKept[key] = {
-      lit: fields.map((f) => { const a = new Float32Array(f.total); for (let i = 0; i < f.total; i++) a[i] = f.src[i * STRIDE + 7]; return a; }),
-      mask: (() => { const a = new Uint8Array(MN_ * MN_); for (let i = 0; i < MN_ * MN_; i++) a[i] = gdata[i * 4 + 3]; return a; })(),
-    };
+    // (the ground map with this state's sun mask in its alpha: a texture of its own, so that two states can be
+    // drawn in one frame during a change)
+    const tex = new THREE.DataTexture(gdata.slice(), MN_, MN_, THREE.RGBAFormat, THREE.UnsignedByteType);
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true; tex.needsUpdate = true;
+    GROUND_UNIFORMS.uContact.value = tex;
+    sunKept[key] = { lit: fields.map((f) => { const a = new Float32Array(f.total); for (let i = 0; i < f.total; i++) a[i] = f.src[i * STRIDE + 7]; return a; }), tex };
     console.info(`[grass] baked the sun term (${key}) of ${tufts.total + flowers.total + strokes.total} instances (${n} in shade) in ${(performance.now() - t0).toFixed(0)} ms`);
   };
   onSun((renderer, key) => { if (baked) sunBake(renderer, key); });

@@ -9,7 +9,7 @@ import { buildTerrain } from './terrain.js';
 import { buildSky } from './sky.js';
 import { buildRuin } from './ruin.js';
 import { VIEWS } from './views.js';
-import { MODE, setMode, sunDir, sunPainted } from './mode.js';
+import { MODE, setMode, sunDir, sunKey, sunPainted } from './mode.js';
 
 const params = {
   msaa: 4, kuwahara: 3, line: 0.8, quiet: 1, counter: 1, bloom: 0.3, grain: 0.035, vignette: 0.2,
@@ -251,9 +251,12 @@ function frame(now) {
   }
   pullT = Math.min(pullT, c0); pullS = Math.min(pullS, c0); lensSnap = false;
   lens.pullS = pullS; lens.c0 = c0; lens.want = want; lens.tgt = tgt; lens.lowCap = lowCap; lens.D = D;
-  // looking steeply down the pull gives way, gradually (a camera far behind the viewer would rise high over
-  // them as it turns about them)
-  let pull = pullS * sm(-1.1, -0.35, state.pitch);
+  // The camera stands BEHIND the viewer by the pull, on the level: turning the head up or down turns the camera
+  // where it stands - its height never changes and nothing dollies (pulled back along the line of sight
+  // instead, it swung up and down an arc about the viewer as the head tilted, and the ground came and went).
+  // Only looking almost straight down does the pull give way, level and gradually: there the camera would
+  // look at the ground behind the viewer's feet.
+  let pull = pullS * sm(-1.35, -0.9, state.pitch);
   // the near-plane window at the viewer stays above the ground: on a level look th * (0.3 + pull) <= 0.8 eye
   pull = Math.max(0, Math.min(pull, 0.8 * eye / (th0 * D / (D + pull)) - 0.3));
   const th = th0 * D / (D + pull), n = 0.3 + pull;
@@ -269,24 +272,49 @@ function frame(now) {
   }
   camera.rotation.set(state.pitch - sh, state.yaw, 0, 'YXZ');
   camera.fov = (Math.atan(th) * 360) / Math.PI;
-  camera.near = n; camera.updateProjectionMatrix();
+  // (the near plane is the window at the viewer: the viewer stands pull * cos(tilt) down the line of sight)
+  // ... and looking down it comes in to stay clear of the ground at the foot of the picture (the lowest ray of
+  // the lens meets the ground eye / sin(a) away; the ground may rise toward it, so a margin)
+  {
+    const beta = Math.atan(th - Math.tan(sh)), a = -(state.pitch - sh) + beta;
+    camera.near = 0.3 + pull * Math.cos(state.pitch - sh);
+    if (a > 0.02) camera.near = Math.max(0.3, Math.min(camera.near, 0.6 * eye * Math.cos(beta) / Math.sin(a)));
+  }
+  camera.updateProjectionMatrix();
   camera.projectionMatrix.elements[9] = Math.tan(sh) / th;
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   camera.getWorldDirection(fwd);
-  camera.position.copy(state.pos).addScaledVector(fwd, -pull);
+  camera.position.set(state.pos.x + Math.sin(state.yaw) * pull, state.pos.y, state.pos.z + Math.cos(state.yaw) * pull);
   camera.updateMatrixWorld(true);
   G.uCamPos.value.copy(camera.position);
   G.uPixelK.value = (2 * Math.tan((camera.fov * Math.PI) / 360)) / pipe.h;
   G.uCamRight.value.setFromMatrixColumn(camera.matrixWorld, 0);
   G.uCamUp.value.setFromMatrixColumn(camera.matrixWorld, 1);
 
-  // nothing that casts a shadow moves (leaf shadows are held still), so the sun map is painted once -
-  // and once more whenever the hour changes (then whatever was baked from it follows: sunPainted)
-  if (stat.frames < 8) pipe.renderShadow(scene, sunDir(), new THREE.Vector3(0, 0, 4));
-  else if (sunMoved) { pipe.renderShadow(scene, sunDir(), new THREE.Vector3(0, 0, 4)); sunPainted(renderer); sunMoved = false; }
-  if (hold > 0) { hold = Math.max(0, hold - dt / DISSOLVE); pipe.final.uniforms.uHold.value = hold * hold * (3 - 2 * hold); }
+  // nothing that casts a shadow moves (leaf shadows are held still), so the sun map of a state is painted once.
+  // During a change of hour or season BOTH states are painted, from this frame's camera, and the picture
+  // goes from one to the other: a dissolve that holds while walking and turning.
+  if (trans && (trans.t += dt / DISSOLVE) >= 1) trans = null;
+  if (trans) {
+    applyState(trans.from, sunKey(trans.to));
+    pipe.render(scene, camera, true);
+    applyState(trans.to, sunKey(trans.from));
+    const k = trans.t * trans.t * (3 - 2 * trans.t);
+    pipe.final.uniforms.uHold.value = 1 - k;
+  } else {
+    pipe.final.uniforms.uHold.value = 0;
+    applyState(MODE, null, stat.frames < 8);
+  }
   pipe.render(scene, camera);
-  if (stat.frames === 1) {
+  // Behind the loading screen, once the opening state stands: the three other states are visited once, so that
+  // what each bakes from its sun map (src/mode.js onSun) is done before anyone can ask for a change - a change
+  // of hour or season then never stalls. (?prebake=0 skips it: the first visit to a state bakes it instead.)
+  if (stat.frames === 9) {
+    if (q.get('prebake') !== '0') {
+      const here = { eve: MODE.eve, snow: MODE.snow };
+      for (const m of [{ eve: 1 - here.eve, snow: here.snow }, { eve: 1 - here.eve, snow: 1 - here.snow }, { eve: here.eve, snow: 1 - here.snow }]) applyState(m, null);
+      applyState(here, null);
+    }
     performance.mark('scene-ready');
     dispatchEvent(new Event('scene-ready'));
   }
@@ -295,14 +323,23 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // ---------------------------------------------------------------- the hour and the season
-// A change is a dissolve, the way a film goes from one painting of a place to the next: the picture as it
-// stands is held and the new one comes up through it (the sun map and what is baked from it are painted
-// again under the hold, on the first frame).
-const DISSOLVE = 1.1;
-let hold = 0, sunMoved = false;
+// A change is a dissolve between two paintings of the place, both painted from where the viewer is NOW on every
+// frame of it (see frame()), so it holds while walking: the scene is drawn twice for that second.
+const DISSOLVE = 1.2;
+let trans = null, applied = sunKey();
+const CENTER = new THREE.Vector3(0, 0, 4);
+// makes a state the current one: its uniforms, its sun map, and what is baked from that map
+function applyState(m, keep, force = false) {
+  if (m !== MODE) setMode(m);
+  const key = sunKey(m);
+  const painted = pipe.shadowFor(key, keep, scene, sunDir(), CENTER, force);
+  if (key !== applied || (painted && !force)) { applied = key; sunPainted(renderer); }
+}
 function changeMode(m, instant = false) {
-  if (!instant && stat.frames > 8) { pipe.snapshot(); hold = 1; pipe.final.uniforms.uHold.value = 1; }
-  if (setMode(m)) sunMoved = true;
+  const from = { eve: MODE.eve, snow: MODE.snow };
+  setMode(m);
+  const to = { eve: MODE.eve, snow: MODE.snow };
+  trans = !instant && stat.frames > 8 && (from.eve !== to.eve || from.snow !== to.snow) ? { from, to, t: 0 } : null;
   for (const [k, b] of Object.entries(modeBtn)) { b.textContent = LABEL[k][MODE[k]]; b.setAttribute('aria-pressed', MODE[k] ? 'true' : 'false'); }
 }
 const LABEL = { eve: ['☀ Day', '☾ Evening'], snow: ['✿ Summer', '❄ Winter'] };

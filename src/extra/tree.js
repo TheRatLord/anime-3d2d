@@ -290,6 +290,18 @@ out vec2 vUv; out float vDepth; out vec3 vW; flat out vec4 vK; flat out vec3 vF;
 void main(){
   float size = iData.x, rot = iData.y, variant = iData.z, rnd = iData.w;
   float cr = cos(rot), sr = sin(rot);
+  // WINTER: the leaves are down. A tree's closed base masses are gone and so are half of its sprays; of the
+  // rest only the twig and a leaf in five are drawn (see the fragment shader): a bare crown is a haze of small
+  // separate marks with the sky through it. A shrub, all twig, keeps more. The sun map is painted with the
+  // same sprays (and the same few leaves), so the shadow on the snow is a bare tree's.
+  if (uSnow > 0.5){
+#ifdef PROBE
+    float keep = 0.75;
+#else
+    float keep = variant > 3.5 ? 0.0 : 0.55;
+#endif
+    if (fract(rnd * 91.37 + rot * 3.11) > keep) size = 0.0;
+  }
 #ifdef SHADOW_PASS
   // the cast shadow is STILL (a painted background): fixed axes, no wind. The receivers threshold a coarse
   // lattice, so a few centimetres of sway would flip whole lobes of the shadow on single ticks.
@@ -406,6 +418,7 @@ void main(){
 `;
 
 const CARD_FS = /* glsl */`
+#define WINTER_LEAF 0.50
 in vec2 vUv; in float vDepth; in vec3 vW; flat in vec4 vK; flat in vec3 vF;
 uniform sampler2D uLeaf;
 flat in vec3 vC0, vC1, vC1b, vC2, vC3, vC4, vP;
@@ -470,10 +483,18 @@ void main(){
     // the spray's twig (tone 0..2 in the atlas): a thin dark stroke
     if (t.r < 0.011) c = mix(vC1b, vec3(0.30, 0.27, 0.30), 0.45);
   }
-  // under snow a crown is its own snow: the lights of a spray are the snow lying on it, its body the blue of
-  // snow seen from beneath, the dark accents what is left of the leaves (a leaf's tone is lifted a step, so
-  // the mid green of a crown is snow in shade and not the dark of a wood)
-  if (uSnow > 0.0){ c = mix(c, snowTone(dot(c, LUMA) + 0.07), uSnow); gOwnSnow = true; }
+  // WINTER. Of a spray only its twig and a leaf in five are left (chosen by the leaf's own tone, so each is a
+  // whole leaf-shaped mark). The upper ones are the snow lodged in the twigs - white in the light, the sky's
+  // blue in the crown's own shade - the others the last dry leaves, brown-grey and violet-grey.
+  if (uSnow > 0.5){
+    bool twig = t.r < 0.011, leaf = t.r > 0.30 && t.r < WINTER_LEAF;
+    if (!twig && !leaf) discard;
+    float snowy = step(0.02, up + (fract(t.r * 37.0) - 0.5) * 0.5);
+    vec3 dry = fract(t.r * 61.0) < 0.5 ? vec3(0.545, 0.470, 0.455) : vec3(0.455, 0.440, 0.540);
+    vec3 sn = b > 0.52 ? SNOW_L : b > 0.36 ? SNOW_C * vec3(0.93, 0.95, 1.0) : SNOW_S;
+    c = twig ? vec3(0.36, 0.33, 0.38) : mix(dry, sn, snowy);
+    gOwnSnow = true;
+  }
   oColor = vec4(c, cov);
   writeAux(vec3(0.0, 1.0, 0.0), 0.0, vDepth, vP.y, 0.0, 0.0);
 }
@@ -483,7 +504,13 @@ const CARD_SHADOW_FS = /* glsl */`
 in vec2 vUv; flat in vec4 vK; flat in vec3 vF;
 uniform sampler2D uLeaf;
 out vec4 o;
-void main(){ if (texture(uLeaf, vUv).a < 0.5) discard; o = vec4(1.0); }
+uniform float uSnow;
+void main(){
+  vec4 t = texture(uLeaf, vUv);
+  if (t.a < 0.5) discard;
+  if (uSnow > 0.5 && !(t.r < 0.011 || (t.r > 0.30 && t.r < 0.50))) discard;      // (winter: the same few leaves as are drawn)
+  o = vec4(1.0);
+}
 `;
 
 // The dark base of the crown: one lumpy solid inside every clump, in the two dark teals. Far away it
@@ -498,6 +525,8 @@ out vec3 vW; out vec3 vA; out vec3 vB; out vec3 vC; out vec3 vD; out vec3 vN; ou
 void main(){
   // (the side holes of the crown, see sideHole: read at the vertices - the core's skin is finer than a hole)
   vSide = 1.0;
+  // (winter: a tree has no leaf mass to close - its cores are gone; a shrub keeps its body under the snow)
+  if (uSnow > 0.5 && aCr.w > 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   if (SIDE_HOLE > 0.0 && aCr.w > 0.0) { float hk; vec2 hv = sidePlane(position, aCr, hk); if (hk > 0.0) vSide = sideHole(hv, aCr.w, aId.x, hk, 0.05); }
   vW = position; vA = aC1; vB = aC1b; vC = aC2; vD = aC0; vN = aN; vId = aId.x; vLvl = aId.y;
   vec4 mv = viewMatrix * vec4(position, 1.0); vDepth = -mv.z;
@@ -753,7 +782,7 @@ void main(){
   }
   // snow lies along the upper side of every bough (a brushed line, broken in places); the bark under it a step deeper
   if (uSnow > 0.0){
-    float lie = toneStep(n.y, 0.50, bk.r * 0.5 + hf.a * 0.3 + bf.g * 0.2, 0.42) * smoothstep(0.35, 0.60, bk.a + 0.25);
+    float lie = toneStep(n.y, 0.22, bk.r * 0.5 + hf.a * 0.3 + bf.g * 0.2, 0.40) * smoothstep(0.22, 0.45, bk.a + 0.25);
     // (a limb lost in the leaves took their green: there it is lost in the snow of the crown instead)
     c = mix(c, snowTone(dot(c, LUMA) + 0.07), smoothstep(0.0, 0.05, c.g - c.r) * uSnow);
     c = mix(c * vec3(0.90, 0.89, 0.93), mix(SNOW_S, SNOW_L, smoothstep(0.24, 0.42, sh)), lie * uSnow);

@@ -750,7 +750,7 @@ void main(){
   // ---- grass against the stone. Where stone stands in the turf the grass overlaps its foot: an
   // irregular fringe of blades (clumps along the wall, bare stretches between), in the tone of the
   // grass that stands there. World-fixed. On a slab or a step the turf creeps in over the edges.
-  if (base < 0.4 || base > 5.0) {
+  if (base < 0.4 + 0.9 * uSnow || base > 5.0) {
     vec3 gcol = mix(vec3(0.285, 0.475, 0.385), vec3(0.56, 0.73, 0.41), t);
     if (uSnow > 0.5) gcol = mix(SNOW_S, SNOW_C, t);            // (the drift against the foot)
     float tri1 = 1.0 - abs(fract(hc * 7.3 + colT.a * 3.0) - 0.5) * 2.0;
@@ -778,7 +778,7 @@ void main(){
     if (uSnow > 0.5){
       turf = mix(SNOW_S, SNOW_L, t);
       // (a drift is a low rounded bank, not a fringe of blades)
-      gh = (0.11 + clump * 0.15 + mound * 1.4) * max(1.0, px * 55.0);
+      gh = (0.24 + clump * 0.30 + mound * 2.2 + (bw.a - 0.5) * 0.25) * max(1.0, px * 30.0);
       gx = gh - base; gw = max(fwidth(gx), 0.003);
       fr = smoothstep(-gw, gw, gx) * step(abs(n.y), mix(0.6, 0.9, lumpF)) * (1.0 - cyl * step(base, -1.0));
     }
@@ -806,7 +806,12 @@ void main(){
   // to stand on.
   if (uSnow > 0.0){
     float up = max(n.y, nl.y * step(0.5, breakTop));
-    float lie = toneStep(up, mix(0.60, 0.46, lumpF), pt.r * 0.45 + bw.a * 0.35 + wobT.a * 0.2, 0.34);
+    float lie = toneStep(up, mix(0.50, 0.30, lumpF), pt.r * 0.45 + bw.a * 0.35 + wobT.a * 0.2, 0.34);
+    // the snow is DEEP: it hangs over the edge of whatever it lies on - a ragged lip on the face under every
+    // broken top, ledge and sill (where the stones above shed onto the wall), longer in places
+    // (its lower edge is a slow wandering line along the wall with a little brush in it - not a row of teeth)
+    float lip = toneStep(stainPix + (colT.a - 0.5) * 0.30 + (bw.a - 0.5) * 0.20, 0.86, softN, 0.10) * wallFace * step(0.05, stainPix) * (1.0 - cyl);
+    lie = max(lie, lip);
     vec3 sn = mix(mix(SNOW_S, SNOW_D, step(0.62, pt.g) * 0.6), mix(SNOW_C, SNOW_L, step(0.42, bw.g)), t);
     // (winter stone: a step deeper and greyer - the cream of summer would be yellow against the white)
     c = mix(mix(c, vec3(dot(c, LUMA)) * vec3(0.99, 0.99, 1.04), 0.22 * uSnow) * mix(vec3(1.0), vec3(0.93, 0.925, 0.95), uSnow), sn, lie * uSnow);

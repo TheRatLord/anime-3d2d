@@ -44,7 +44,10 @@ float mistStep(vec3 w, float top){
   float d = ${EYE_Y.toFixed(2)} + length(w.xz) * (top + (-46.0 * max(0.56 - here, 0.0) + (swell - 0.6) * 5.0) / 900.0) - w.y;
   return step(0.0, d) * 2.0;
 }
-const vec3 MIST_A = vec3(0.788, 0.867, 0.839), MIST_B = vec3(0.863, 0.922, 0.890);   // #C9DDD6, #DCEBE3
+const vec3 MIST_A0 = vec3(0.788, 0.867, 0.839), MIST_B0 = vec3(0.863, 0.922, 0.890);   // #C9DDD6, #DCEBE3
+// (the mist has the colour of the hour's air: at evening the rose of the far haze, under snow a colder white)
+#define MIST_A mix(mix(MIST_A0, vec3(0.850, 0.890, 0.930), uSnow), uHazeFarCol * vec3(0.93, 0.90, 0.97), uEve)
+#define MIST_B mix(mix(MIST_B0, vec3(0.905, 0.930, 0.955), uSnow), uHazeFarCol * vec3(0.98, 0.96, 1.00), uEve)
 `;
 const BASIC_VS = /* glsl */`
 in vec3 position; in vec3 normal; in vec2 aUv;
@@ -747,6 +750,11 @@ void main(){
   if (abs(vUv.x) > 0.72 + (b.r - 0.5) * 0.5) discard;
   if (vUv.y < uR.y + b.g * 26.0) discard;
   vec3 c = mix(uA, uB, step(0.62, texture(uBrush, vW.xz * uR.z * vec2(0.35, 1.3) + 0.4).b));
+  float water = step(uA.r, uA.b);
+  // under snow the road is a trodden track (blue-grey, its second tone the white left between the ruts) and the
+  // river is ice; at evening the water gives back the sky (the hour is laid by atmo on everything else)
+  if (uSnow > 0.0) c = mix(c, water > 0.5 ? mix(vec3(0.800, 0.870, 0.930), vec3(0.930, 0.950, 0.970), step(uA.b, c.b + 0.01)) : mix(vec3(0.800, 0.840, 0.930), vec3(0.900, 0.922, 0.965), step(uA.r, c.r + 0.01)), uSnow);
+  if (uEve > 0.0 && water > 0.5) { gHour = true; c = mix(c, mix(vec3(0.830, 0.700, 0.760), vec3(1.000, 0.880, 0.760), step(uA.b + 0.01, c.b)), uEve); }
   c = atmo(c, max(stepFog(length(vW.xz)) * uR.x, uR.w));
   oColor = vec4(c, 1.0);
   writeAux(vec3(0., 1., 0.), 0.0, vDepth, 0.011, 0.0, 0.0);
@@ -791,6 +799,11 @@ void main(){
   if (t.a < 0.42 + d.r * 0.36 + d.b * 0.14) discard;
   // two close values of every colour, in flat dabs
   vec3 c = t.rgb * (1.0 + (step(0.56, d.g) - 0.5) * 0.05);
+  // under snow the roofs are white (tile and slate are told from wall by their hue; a breath of the roof is left)
+  if (uSnow > 0.0){
+    float rf = max(smoothstep(0.10, 0.17, c.r - c.g), smoothstep(0.07, 0.12, c.b - c.r));
+    c = mix(c, mix(SNOW_S, SNOW_L, smoothstep(0.50, 0.58, dot(c, LUMA))), rf * 0.86 * uSnow);
+  }
   c = atmo(c, uC.x);
   oColor = vec4(c, 1.0);
   writeAux(vec3(0., 0., 1.), 0.0, vDepth, uC.z, uC.z, 0.0);

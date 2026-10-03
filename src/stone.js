@@ -577,8 +577,8 @@ void main(){
   litC = mix(litC, litC * vec3(0.975, 0.92, 0.82), rust * uWarm * 0.75);
   litC = mix(litC, litC * stC, st);
   // the foot in light: an ochre stain creeping up from the ground, its low core olive
-  litC = mix(litC, lit * mix(vec3(0.955, 0.895, 0.715), vec3(0.76, 0.81, 0.55), footB) * marksLit, footA * mix(0.62, 0.85, footB) * uWarm * footC);
-  litC = mix(litC, mix(litC, uMoss, mA), m);
+  litC = mix(litC, lit * mix(vec3(0.955, 0.895, 0.715), vec3(0.76, 0.81, 0.55), footB) * marksLit, footA * mix(0.62, 0.85, footB) * uWarm * footC * (1.0 - 0.8 * uSnow));
+  litC = mix(litC, mix(litC, uMoss, mA * (1.0 - 0.75 * uSnow)), m);
   // a loose block, a drum or a slab carries a few short broken strokes of its own (old joints, cracks)
   if (own > 0.5) {
     float ck = smoothstep(0.89, 0.92, pt.b) * smoothstep(0.50, 0.60, bw.r * 0.5 + wobT.a * 0.5) * (1.0 - smoothstep(14.0, 30.0, dist));
@@ -629,7 +629,7 @@ void main(){
   shade *= famSh * marksSh;
   shade = mix(shade, shade * vec3(1.045, 0.99, 0.92), rust * uWarm * 0.6);
   shade = mix(shade, shade * vec3(0.86, 0.87, 0.90), st);
-  shade = mix(shade, shade0 * mix(vec3(0.90, 0.94, 0.83), vec3(0.78, 0.875, 0.72), footB) * marksSh, footA * uWarm * footC);
+  shade = mix(shade, shade0 * mix(vec3(0.90, 0.94, 0.83), vec3(0.78, 0.875, 0.72), footB) * marksSh, footA * uWarm * footC * (1.0 - 0.8 * uSnow));
   shade = mix(shade, mix(shade, uMossShade, mA), m);
   // -- found edges. Two walls that meet at a corner never share one tone: the planes that look
   // east / west sit a step below the ones that look north / south, whatever the light does. So a
@@ -752,6 +752,7 @@ void main(){
   // grass that stands there. World-fixed. On a slab or a step the turf creeps in over the edges.
   if (base < 0.4 || base > 5.0) {
     vec3 gcol = mix(vec3(0.285, 0.475, 0.385), vec3(0.56, 0.73, 0.41), t);
+    if (uSnow > 0.5) gcol = mix(SNOW_S, SNOW_C, t);            // (the drift against the foot)
     float tri1 = 1.0 - abs(fract(hc * 7.3 + colT.a * 3.0) - 0.5) * 2.0;
     float tri2 = 1.0 - abs(fract(hc * 3.1 + colT.a * 5.0 + 0.31) - 0.5) * 2.0;
     float clump = smoothstep(0.38, 0.62, colT.a * 0.6 + bw2.r * 0.4);
@@ -774,6 +775,13 @@ void main(){
     float isl = paveIsl(vW.xz, wz);
     float over = 1.0 - toneStep(isl, PAVE_TH, pt.r * 0.5 + 0.25, 0.06);
     vec3 turf = mix(vec3(0.325, 0.53, 0.445), vec3(0.86, 0.91, 0.58) * mix(0.965, 1.0, step(0.45, pt.g)), t);   // (the wash of the ground itself)
+    if (uSnow > 0.5){
+      turf = mix(SNOW_S, SNOW_L, t);
+      // (a drift is a low rounded bank, not a fringe of blades)
+      gh = (0.05 + clump * 0.13 + mound * 1.4) * max(1.0, px * 55.0);
+      gx = gh - base; gw = max(fwidth(gx), 0.003);
+      fr = smoothstep(-gw, gw, gx) * step(abs(n.y), mix(0.6, 0.9, lumpF)) * (1.0 - cyl * step(base, -1.0));
+    }
     float creep = smoothstep(0.50, 0.68, pt.g * 0.5 + bw.r * 0.5) * (1.0 - smoothstep(0.0, 0.05, isl - PAVE_TH));
     float gs = max(over, 1.0 - toneStep(dE, 0.004 + 0.13 * creep, pt.r * 0.5 + wobT.a * 0.5, 0.01 + 0.25 * creep));
     // (the fringe is one green with a brushed second value in it - never a blade-by-blade stripe)
@@ -788,7 +796,21 @@ void main(){
     // there is none: the top is turf from edge to edge there)
     float gT = toneStep(eT + (pt.g - 0.5) * 0.30 + (bw.a - 0.5) * 0.25 + (bw2.a - 0.5) * 0.30, mix(0.52, 0.20, hiK2), pt.r, 0.08);
     gT = max(gT, toneStep(bw2.g * 0.55 + bw.r * 0.45, 0.57, pt.g, 0.10) * hiK2);
-    c = mix(c, mix(vec3(0.285, 0.475, 0.385), vec3(0.56, 0.73, 0.41), t) * 0.97, gT * step(0.3, uMossAmt));
+    c = mix(c, (uSnow > 0.5 ? mix(SNOW_S, SNOW_L, t) : mix(vec3(0.285, 0.475, 0.385), vec3(0.56, 0.73, 0.41), t)) * 0.97, gT * step(0.3, uMossAmt));
+  }
+
+  // ---- SNOW. It lies on whatever looks at the sky: the broken tops of the walls, ledges and sills, the
+  // paving, the upper side of every fallen stone. One white (and the sky's blue where the stone is in
+  // shade), its edge a brushed contour that creeps down the sloping faces in places and is thin over an
+  // arris; on a rounded stone it is a cap. The stone under it is a step deeper, so the white has something
+  // to stand on.
+  if (uSnow > 0.0){
+    float up = max(n.y, nl.y * step(0.5, breakTop));
+    float lie = toneStep(up, mix(0.60, 0.46, lumpF), pt.r * 0.45 + bw.a * 0.35 + wobT.a * 0.2, 0.34);
+    vec3 sn = mix(mix(SNOW_S, SNOW_D, step(0.62, pt.g) * 0.6), mix(SNOW_C, SNOW_L, step(0.42, bw.g)), t);
+    // (winter stone: a step deeper and greyer - the cream of summer would be yellow against the white)
+    c = mix(mix(c, vec3(dot(c, LUMA)) * vec3(0.99, 0.99, 1.04), 0.22 * uSnow) * mix(vec3(1.0), vec3(0.93, 0.925, 0.95), uSnow), sn, lie * uSnow);
+    gOwnSnow = true;
   }
 
   // the drawn contour of a shaft on its shade side: a line of constant width on the canvas where

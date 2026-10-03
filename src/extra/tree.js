@@ -470,6 +470,10 @@ void main(){
     // the spray's twig (tone 0..2 in the atlas): a thin dark stroke
     if (t.r < 0.011) c = mix(vC1b, vec3(0.30, 0.27, 0.30), 0.45);
   }
+  // under snow a crown is its own snow: the lights of a spray are the snow lying on it, its body the blue of
+  // snow seen from beneath, the dark accents what is left of the leaves (a leaf's tone is lifted a step, so
+  // the mid green of a crown is snow in shade and not the dark of a wood)
+  if (uSnow > 0.0){ c = mix(c, snowTone(dot(c, LUMA) + 0.07), uSnow); gOwnSnow = true; }
   oColor = vec4(c, cov);
   writeAux(vec3(0.0, 1.0, 0.0), 0.0, vDepth, vP.y, 0.0, 0.0);
 }
@@ -568,6 +572,7 @@ void main(){
     // the inside of the far shell: the deep teal, with navy leaves in broad patches
     c = mix(vB, vD, step(0.45, t.r) * step(0.5, nz.g) );
   }
+  if (uSnow > 0.0){ c = mix(c, snowTone(dot(c, LUMA) + 0.07), uSnow); gOwnSnow = true; }
   oColor = vec4(c, cov);
   writeAux(vec3(0.0, 1.0, 0.0), 0.0, vDepth, vId, 0.0, 0.0);
 }
@@ -745,6 +750,12 @@ void main(){
     c = mix(mix(c, lostC, lost * 0.94), mix(darkT, lightT, two), limbK);
   } else {
     c = mix(c, lostC, lost * 0.94);
+  }
+  // snow lies along the upper side of every bough (a brushed line, broken in places); the bark under it a step deeper
+  if (uSnow > 0.0){
+    float lie = toneStep(n.y, 0.50, bk.r * 0.5 + hf.a * 0.3 + bf.g * 0.2, 0.42) * smoothstep(0.35, 0.60, bk.a + 0.25);
+    c = mix(snowLand(c) * vec3(0.90, 0.89, 0.93), mix(SNOW_S, SNOW_L, smoothstep(0.24, 0.42, sh)), lie * uSnow);
+    gOwnSnow = true;
   }
   c = atmo(c, vP.x);
   oColor = vec4(c, 1.0);

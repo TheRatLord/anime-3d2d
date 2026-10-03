@@ -688,6 +688,53 @@ vec3 groundPaint(vec3 wp, out float grass){
   if (grass > 0.999) return g;
   return mix(dirtPaint(wp, pi), g, grass);
 }
+// ---- THE HILLTOP UNDER SNOW. The meadow's plan stays (its masses, the feet of things, the track), laid in
+// whites instead of greens: a warm and a cool white in broad drifts, long pale-blue hollows lying across
+// the view where the wind has scooped it, a rougher, bluer snow where the tall grass stands under it, and
+// the track trodden to a blue-grey with the earth showing in its ruts. Every edge is a brushed step.
+vec3 snowGround(vec3 wp, float dist, float grass, float mass, float core, float cm, vec4 wn, float s1, float upv){
+  vec2 p = wp.xz;
+  float drift = texture(uBrush, p / 97.0 + 0.13).a;
+  vec3 s = mix(SNOW_C, SNOW_L, smoothstep(0.36, 0.52, drift));
+  // hollows: long shapes lying across the view from the hilltop (the layout of the meadow's own marks)
+  float tz = smoothstep(0.25, 0.75, p.y * p.y / (dot(p, p) + 1.0));
+  float m = mix(texture(uBrush, p * vec2(1.0 / 11.5, 1.0 / 46.0) + 0.61).a, texture(uBrush, p * vec2(1.0 / 46.0, 1.0 / 11.5) + 0.27).a, tz);
+  float gate = smoothstep(0.38, 0.62, texture(uBrush, p / 29.0 + 0.5).a);
+  float hollow = aastep(0.615, m + (wn.a - 0.5) * 0.07 + (wn.g - 0.5) * 0.03) * gate;
+  s = mix(s, vec3(0.855, 0.895, 0.962), hollow * 0.9);
+  // ... and the crest beside a hollow, the whitest white
+  s = mix(s, vec3(0.992, 0.990, 0.982), aastep(0.335, 0.70 - m + (wn.a - 0.5) * 0.06) * (1.0 - gate) * 0.9);
+  // where the tall grass stood: rougher snow, a step bluer, deeper dabs toward its core
+  s = mix(s, vec3(0.890, 0.920, 0.968), mass * 0.85 * (1.0 - 0.4 * upv));
+  s = mix(s, vec3(0.800, 0.850, 0.945), core * 0.75 * (1.0 - 0.6 * upv));
+  // near the eye: short dry strokes, blue in the rough snow and white on the smooth
+  if (dist < 18.0){
+    float nk = (1.0 - smoothstep(7.0, 18.0, dist)) * grass;
+    float s2 = texture(uBrush, mat2(0.88, 0.47, -0.47, 0.88) * p / 3.6 + 0.71).b;
+    float pt = texture(uBrush, p / 5.2 + 0.23).r;
+    s = mix(s, s * vec3(0.905, 0.930, 0.975), aastep(0.86, s1) * nk * mix(0.35, 0.8, mass));
+    s = mix(s, vec3(0.995, 0.995, 0.990), aastep(0.925, 1.0 - s2) * nk * 0.8 * (1.0 - mass));
+    s = mix(s, s * vec3(0.940, 0.955, 0.985), aastep(0.86, pt) * nk * 0.8 * (1.0 - mass));
+  }
+  // the foot of walls, trunks and stones: a blue pocket where the drift turns under
+  s = mix(s, vec3(0.745, 0.805, 0.925), cm * 0.85);
+  // the track
+  if (grass < 0.999){
+    vec3 pi = pathInfo(p);
+    vec2 q = vec2(pi.y, pi.x * pi.z);
+    float st = texture(uBrush, q * vec2(1.0 / 12.0, 1.0 / 2.7)).b;
+    vec4 st2 = texture(uBrush, q * vec2(1.0 / 25.0, 1.0 / 5.5) + 0.4);
+    vec3 d = vec3(0.835, 0.865, 0.940);
+    d = mix(d, vec3(0.900, 0.922, 0.965), step(0.58, st2.r) * 0.9);
+    d = mix(d, vec3(0.740, 0.785, 0.905), step(0.70, st));
+    // two ruts, a step deeper; in stretches the earth shows in them
+    float rut = 1.0 - smoothstep(0.07, 0.17, abs(pi.x - 0.52 - (st2.g - 0.5) * 0.18));
+    d = mix(d, vec3(0.690, 0.735, 0.875), rut * step(0.30, st2.a) * 0.9);
+    d = mix(d, vec3(0.585, 0.525, 0.560), rut * step(0.56, st2.a) * step(0.42, st) * 0.9);
+    s = mix(d, s, grass);
+  }
+  return s;
+}
 // r: dark turf gathered at the foot of walls, trunks, stones; g: masses of the foreground band
 // b: the ground of the flower drifts (0.25 = the floor of a drift, 0.5 = the edge of the dab under a cluster)
 // a: 0 where the ground is certainly in the sun (no cast shadow within about a metre: baked once from the sun map by
@@ -1147,6 +1194,9 @@ void main(){
       }
     }
 
+    // ---- under snow (see snowGround): the summer paint is covered
+    if (uSnow > 0.5){ lit = snowGround(vW, dist, grass, mass, core, cm, wn, s1, upv); fm = 0.0; sLight = 0.0; gOwnSnow = true; }
+
     // ---- light. Cast shadow: a smooth rebuilt field (groundShadow) looked up at a softly warped
     // position and cut by one hard step whose threshold is pushed by LARGE world-fixed noise only:
     // a rounded, lobed, firm contour. A wider ring of taps finds the deeper tone further inside.
@@ -1173,6 +1223,11 @@ void main(){
     // (a bloom in cast shadow keeps its hue: the colour a step down and a little cooler - never mixed into the
     // shadow green, which turns yellow to khaki)
     shade = mix(shade, fcol * vec3(0.76, 0.69, 0.82), fm * 0.94);
+    if (uSnow > 0.5){
+      // snow in shade: the sky's blue, a deeper tone inside, the paint under it still told (hollow, track) a step down
+      shade = mix(SNOW_S, SNOW_D, deep) * (0.80 + 0.21 * lit.g / 0.97);
+      shade = mix(shade, shade * vec3(0.93, 0.90, 0.97), (1.0 - grass) * 0.8);
+    }
     c = mix(shade, lit, t);
     tLit = t;
 
@@ -1185,7 +1240,7 @@ void main(){
 
   // stepped haze (the shared table, src/glsl.js HAZE) toward uHazeCol
   // (the season and the hour are laid before the air; on the hilltop the ground knows which side it painted)
-  if (p1 < 0.001) gLit = tLit;
+  if (p1 < 0.001) gLit = tLit; else gOwnSnow = false;
   c = hourOf(c);
   c = mix(c, uHazeCol, ${HAZE[0][1].toFixed(4)} * p1 + ${(HAZE[1][1] - HAZE[0][1]).toFixed(4)} * p2 + ${(HAZE[2][1] - HAZE[1][1]).toFixed(4)} * p3);
 

@@ -89,18 +89,26 @@ export const STEP_FOG_GLSL = `float stepFog(float r){ return ${HAZE.map(([d, h],
 const MODE_GLSL = /* glsl */`
 float gLit = -1.0;
 bool gHour = false;
+bool gOwnSnow = false;                            // set by a material that has painted its own snow
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 const vec3 SNOW_L = vec3(0.972, 0.972, 0.965);    // snow in the sun: paper white, a breath warm
+const vec3 SNOW_C = vec3(0.925, 0.945, 0.975);    // ... and where it turns from the light: a cooler white
 const vec3 SNOW_S = vec3(0.690, 0.760, 0.900);    // snow in shade: the blue of the sky lying on it
-const vec3 SNOW_D = vec3(0.560, 0.640, 0.830);    // ... and its deeper tone
-const vec3 SNOW_W = vec3(0.400, 0.420, 0.500);    // the dark of a winter wood
+const vec3 SNOW_D = vec3(0.585, 0.665, 0.850);    // ... and its deeper tone
+const vec3 SNOW_W = vec3(0.490, 0.530, 0.655);    // the body of a winter wood, a snowed-in crown from below
+const vec3 SNOW_K = vec3(0.350, 0.380, 0.480);    // its darkest accents
+// a green's own value -> the tone of the snow that lies on it. Between the stops the tone follows the value, so
+// two greens a step apart stay a step apart (a wood keeps its body, its foot and its accents); flat paint
+// stays flat.
+vec3 snowTone(float l){
+  vec3 s = mix(SNOW_K, SNOW_W, smoothstep(0.27, 0.43, l));
+  s = mix(s, SNOW_S, smoothstep(0.46, 0.53, l));
+  return mix(s, SNOW_L, smoothstep(0.60, 0.66, l));
+}
 vec3 snowLand(vec3 c){
-  if (uSnow <= 0.0) return c;
+  if (uSnow <= 0.0 || gOwnSnow) return c;
   float gr = c.g - max(c.r, c.b);
-  float l = dot(c, LUMA);
-  vec3 s = mix(SNOW_W, SNOW_S, smoothstep(0.40, 0.50, l));
-  s = mix(s, SNOW_L, smoothstep(0.60, 0.67, l));
-  return mix(c, s, uSnow * smoothstep(0.012, 0.045, gr));
+  return mix(c, snowTone(dot(c, LUMA)), uSnow * smoothstep(0.006, 0.028, gr));
 }
 vec3 evening(vec3 c){
   if (uEve <= 0.0) return c;
@@ -110,9 +118,11 @@ vec3 evening(vec3 c){
   vec3 o = c;
   o.g -= gr * mix(0.30, 0.40, lit);                                    // green toward olive
   // (a green in the low sun is a step DOWN as well: olive, not sand)
-  vec3 L = o * vec3(1.000, 0.860, 0.660) * (1.0 - min(gr * 2.0, 0.20));
+  // (white takes the low sun as a pale peach, not as the gold it lays on stone and grass: snow at evening)
+  float white = smoothstep(0.80, 0.93, l) * (1.0 - smoothstep(0.03, 0.10, max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b))));
+  vec3 L = o * mix(vec3(1.000, 0.860, 0.660), vec3(1.000, 0.905, 0.815), white) * (1.0 - min(gr * 2.0, 0.20));
   L = mix(vec3(dot(L, LUMA)), L, 0.94) + vec3(0.020, 0.000, 0.000);
-  vec3 S = o * vec3(0.920, 0.740, 0.800) + vec3(0.045, 0.012, 0.030);
+  vec3 S = o * vec3(0.900, 0.750, 0.860) + vec3(0.040, 0.012, 0.040);
   return mix(c, mix(S, L, lit), uEve);
 }
 vec3 hourOf(vec3 c){

@@ -71,7 +71,10 @@ uniform sampler2D uBrush;
 uniform float uPixelK;
 ${GRASS_GLSL}
 uniform sampler2D uContact;
+// under snow the ground under a root is the snow there (src/terrain.js snowGround, without its marks)
+const vec3 SNW_L = vec3(0.955, 0.962, 0.968), SNW_S = vec3(0.675, 0.745, 0.890);
 vec3 groundAt(vec2 p, vec3 wash, float lit){
+  if (uSnow > 0.5) return mix(SNW_S, SNW_L, lit);
   return mix(mix(GSH_A, GSH_B, step(0.66, shadePatch(p)) * 0.7) * (0.72 + 0.31 * wash.g), wash, lit);
 }
 // the ground of the flower drifts under a root (see driftWash() in src/terrain.js; the same field without its brush edge)
@@ -114,6 +117,15 @@ void main(){
   // them, and their strokes break the shadow edge)
   if (cat > 5.5 && cat < 6.5) f = mix(min(f, smoothstep(20.0, 40.0, dist)), f, lit);
   if (f > 0.995){ gl_Position = CULL; return; }
+  // UNDER SNOW most of the grass is buried. What still stands is the tall and the sheltered: the weeds and the
+  // runs of tall grass, some of the fringe along the track and at the foot of things, a few big tufts of the
+  // masses - dry straw now, each a little shorter for the snow round its foot.
+  if (uSnow > 0.5){
+    float keep = cat < 1.5 ? 0.30 : cat < 2.5 ? 0.34 : cat < 3.5 ? 0.0 : cat < 4.5 ? 0.05 : cat < 5.5 ? 0.85 : cat < 6.5 ? 0.30 : 0.0;
+    // (they stand in clumps, not evenly: a slow field of the ground lets a stretch keep more and the next none)
+    keep *= 2.0 * smoothstep(0.30, 0.70, texture(uBrush, iPos.xz / 17.0 + 0.43).a);
+    if (fract(rnd * 61.7 + rnd2 * 3.1) > keep){ gl_Position = CULL; return; }
+  }
   float wS = windAt(iPos.xz);
   float cf = smoothstep(0.0, 0.7, f);
   // (next to the lens a tuft ducks instead of going transparent: no ghost blades over what is behind)
@@ -225,6 +237,15 @@ void main(){
   }
   // in shade: lighter blades (#7FB48A) over the dark ground, so the tufts stand out from it
   vec3 lightS = vec3(0.515, 0.730, 0.560), midS = vec3(0.325, 0.545, 0.455), darkS = vec3(0.205, 0.375, 0.365);
+  if (uSnow > 0.5){
+    // dry grass: straw, ochre and a brown-violet foot (two families, by the stretch of ground); in shade the
+    // same a step down and cooler - warm marks on the blue
+    float hueS = smoothstep(0.40, 0.60, texture(uBrush, iPos.xz / 9.0 + 0.19).a + (rnd - 0.5) * 0.2);
+    lightL = mix(vec3(0.905, 0.850, 0.690), vec3(0.870, 0.790, 0.620), hueS);
+    midL   = mix(vec3(0.770, 0.690, 0.540), vec3(0.720, 0.615, 0.490), hueS);
+    darkL  = mix(vec3(0.570, 0.495, 0.470), vec3(0.525, 0.440, 0.440), hueS);
+    lightS = vec3(0.640, 0.610, 0.640); midS = vec3(0.530, 0.495, 0.570); darkS = vec3(0.420, 0.390, 0.500);
+  }
   vec3 ground = groundAt(iPos.xz, g, lit);
   // (a gust shows the pale side of the leaning blades: the lit tones of a tuft lift a touch, in the sun only)
   float sheen = ${WIND_K.sheen} * lit * smoothstep(0.25, 1.0, wS) * (position.z > 0.5 ? 0.0 : 1.0);
@@ -241,6 +262,7 @@ void main(){
   }
   // the feet of the blades are one flat tone close to the ground paint, so the tuft grows out of it
   vBase  = mix(band ? ground : mix(ground, vec3(0.66, 0.83, 0.47), 0.42 * lit), vMid, 0.30);
+  if (uSnow > 0.5) vBase = mix(ground, vMid, 0.22);          // (the foot stands in snow)
   vRand = rnd;
 
   vec4 mv = viewMatrix * vec4(w, 1.0);
@@ -266,6 +288,7 @@ void main(){
   vec3 c = v > 0.70 ? vLight : v > 0.32 ? vMid : vDark;
   // ragged foot: below a level that differs from blade to blade, the stroke is the base tone
   if (vBy < 0.06 + 0.09 * fract(vRand * 13.7) + (t.r - 0.5) * 0.14) c = vBase;
+  gOwnSnow = uSnow > 0.5;
   oColor = vec4(c, cov);
   writeAux(vec3(0., 1., 0.), 0.0, vDepth, 0.011, 0.0, 0.0);
 }
@@ -283,6 +306,7 @@ flat out vec3 vStem;      // length of the stem below the bloom centre (bloom ra
 void main(){
   float rnd = iData.z;
   vStem = vec3(0.0); vKx = 0.0; vStemA = 1.0;
+  if (uSnow > 0.5){ gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }      // no blooms under snow
   // (colour + 8 * class + 32 * "stands inside the painted body of a drift")
   float inBody = floor(iData.y / 32.0 + 0.01), cc = iData.y - inBody * 32.0;
   float cls = floor(cc / 8.0 + 0.01), col = cc - cls * 8.0;
@@ -581,6 +605,7 @@ void main(){
   vec3 ground = groundAt(iPos.xz, g, iLit);
   vec3 lighter = mix(ground * vec3(1.045, 1.035, 1.10), ground * vec3(1.30, 1.22, 1.12), 1.0 - iLit);
   vec3 darker = mix(ground * vec3(0.925, 0.965, 0.90), ground * vec3(0.84, 0.86, 0.90), 1.0 - iLit);
+  if (uSnow > 0.5){ lighter = mix(vec3(0.770, 0.825, 0.940), vec3(0.995, 0.995, 0.990), iLit); darker = ground * vec3(0.900, 0.930, 0.980); }
   vC = mix(iData.z > 0.0 ? lighter : darker, ground, smoothstep(0.0, 0.8, f));
   vAlpha = (1.0 - smoothstep(0.5, 1.0, f)) * (1.0 - above);
   vP = position.xy; vRand = rnd; vLen = iData.x;
@@ -601,6 +626,7 @@ void main(){
   float v = min(prof, 1.0) - abs(vP.y);
   float cov = clamp(v / max(fwidth(v), 1e-4) + 0.5, 0.0, 1.0) * vAlpha;
   if (cov <= 0.02) discard;
+  gOwnSnow = uSnow > 0.5;
   oColor = vec4(vC, cov);
   writeAux(vec3(0., 1., 0.), 0.0, vDepth, 0.011, 0.0, 0.0);
 }

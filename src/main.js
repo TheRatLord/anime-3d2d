@@ -8,8 +8,9 @@ import { LAYOUT } from './layout.js';
 import { buildTerrain } from './terrain.js';
 import { buildSky } from './sky.js';
 import { buildRuin } from './ruin.js';
-import { VIEWS } from './views.js';
+import { VIEWS, TOUR } from './views.js';
 import { MODE, setMode, sunDir, sunKey, sunPainted } from './mode.js';
+import { buildUI } from './ui.js';
 
 const params = {
   msaa: 4, kuwahara: 3, line: 0.8, quiet: 1, counter: 1, bloom: 0.3, grain: 0.035, vignette: 0.2,
@@ -20,6 +21,10 @@ const params = {
   shift: 1, tele: -1, wobble: 1,
   licence: 1,   // the painter's licence (LICENCE in src/glsl.js), switched with P
 };
+// on a phone or tablet (the same test as the touch interface in index.html) every lens is much wider - the
+// opening one and the one each still asks for (setView): held upright, a 40 deg lens shows a sliver of the place
+const WIDE = matchMedia('(pointer: coarse)').matches ? 1.55 : 1;
+params.fov = Math.round(params.fov * WIDE);
 const q = new URLSearchParams(location.search);
 for (const k of Object.keys(params)) if (q.has(k)) params[k] = parseFloat(q.get(k));
 // the hour and the season the picture opens in: ?eve=1 (or ?time=evening), ?snow=1 (or ?season=winter)
@@ -91,58 +96,96 @@ function standDist(x, z) {
 
 // ---------------- camera: walk / fly
 const state = { pos: new THREE.Vector3(9, 1.7, 22), yaw: 0.45, pitch: 0.06, fly: false };
+// a still stands where it was set (a high one stays in the air) until the first step: then one is on foot
+let held = false;
 function setView(v, keepFov = false) {
   state.pos.set(...v.pos);
   const d = new THREE.Vector3(...v.look).sub(state.pos).normalize();
   state.yaw = Math.atan2(-d.x, -d.z); state.pitch = Math.asin(d.y);
-  if (v.fov && !keepFov) { params.fov = v.fov; }
-  state.fly = true; lensSnap = true;
+  if (v.fov && !keepFov) { params.fov = Math.min(70, Math.round(v.fov * WIDE)); }
+  state.fly = false; held = true; lensSnap = true;
 }
 const keys = {};
-addEventListener('keydown', (e) => {
-  keys[e.code] = true;
-  if (e.code === 'KeyF') state.fly = !state.fly;
-  if (/^Digit[1-5]$/.test(e.code)) params.mode = +e.code.slice(5) - 1;
-  if (e.code === 'KeyH') { params.hud = 1 - params.hud; hud.style.display = params.hud ? '' : 'none'; }
-  if (e.code === 'KeyK') params.kuwahara = params.kuwahara ? 0 : 3;
-  if (e.code === 'KeyL') params.line = params.line ? 0 : 0.8;
-  if (e.code === 'KeyT') params.tele = params.tele < 0 ? 0 : params.tele >= 0.7 ? -1 : params.tele + 0.35;
-  if (e.code === 'KeyG') params.shift = 1 - params.shift;
-  if (e.code === 'KeyP') params.licence = params.licence ? 0 : 1;
-  if (e.code === 'BracketLeft') params.fov = Math.max(14, params.fov - 2);
-  if (e.code === 'BracketRight') params.fov = Math.min(70, params.fov + 2);
-  if (e.code === 'KeyV') { const names = Object.keys(VIEWS); viewIdx = (viewIdx + 1) % names.length; setView(VIEWS[names[viewIdx]]); state.fly = true; }
-});
-let viewIdx = 0;
-const hud = document.createElement('div');
-hud.style.cssText = 'position:fixed;left:14px;bottom:12px;color:#fff;font:12px/1.5 system-ui,sans-serif;text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none;white-space:pre;opacity:.9';
-hud.textContent = 'click to look · WASD move · Shift run · F fly (Q/E down/up) · V next viewpoint\n1 painted · 2 paint only · 3 underlying 3D · 4 normals · 5 depth · K paint filter · L lines · [ ] lens · T telephoto (auto/off/0.35/0.7) · G upright verticals · P painter\'s licence · H hide\nN day / evening · M summer / winter';
-document.body.appendChild(hud);
-if (!params.hud) hud.style.display = 'none';
-addEventListener('keyup', (e) => { keys[e.code] = false; });
-renderer.domElement.addEventListener('click', () => renderer.domElement.requestPointerLock?.());
-addEventListener('mousemove', (e) => {
-  if (document.pointerLockElement !== renderer.domElement) return;
-  state.yaw -= e.movementX * 0.0022; state.pitch -= e.movementY * 0.0022;
+// what a key does; the rows of the controls panel (src/ui.js) do the same by its code
+function act(code) {
+  if (code === 'KeyF') { state.fly = !state.fly; held = false; }
+  if (/^Digit[1-5]$/.test(code)) params.mode = +code.slice(5) - 1;
+  if (code === 'Picture') params.mode = (params.mode + 1) % 5;
+  if (code === 'KeyH') { params.hud = 1 - params.hud; ui.show(params.hud); }
+  if (code === 'KeyK') params.kuwahara = params.kuwahara ? 0 : 3;
+  if (code === 'KeyL') params.line = params.line ? 0 : 0.8;
+  if (code === 'KeyT') params.tele = params.tele < 0 ? 0 : params.tele >= 0.7 ? -1 : params.tele + 0.35;
+  if (code === 'KeyG') params.shift = 1 - params.shift;
+  if (code === 'KeyP') params.licence = params.licence ? 0 : 1;
+  if (code === 'BracketLeft') params.fov = Math.max(14, params.fov - 2);
+  if (code === 'BracketRight') params.fov = Math.min(70, params.fov + 2);
+  if (code === 'KeyV') goView(1);
+  if (code === 'KeyB') goView(-1);
+  if (code === 'KeyC') { if (tour === null) { tour = 0; goView(1); } else tour = null; }
+  if (code === 'KeyN') changeMode({ eve: 1 - MODE.eve });
+  if (code === 'KeyM') changeMode({ snow: 1 - MODE.snow });
+}
+addEventListener('keydown', (e) => { keys[e.code] = true; act(e.code); ui.sync(); });
+// the chosen stills (TOUR in src/views.js), one at a time; the slideshow (`tour`: seconds on the present still,
+// null when off) steps on by itself every TOUR_HOLD seconds and ends the moment the viewer walks or looks
+const TOUR_HOLD = 7;
+let viewIdx = 0, tour = null;
+function goView(step) {
+  viewIdx = (viewIdx + step + TOUR.length) % TOUR.length;
+  setView(VIEWS[TOUR[viewIdx]]);
+  if (tour !== null) tour = 0;
+}
+function endTour() { if (tour !== null) { tour = null; ui.sync(); } }
+const look = (dx, dy, k) => {
+  endTour();
+  state.yaw -= dx * k; state.pitch -= dy * k;
   state.pitch = Math.max(-1.45, Math.min(1.45, state.pitch));
+};
+const onOff = (v) => (v ? 'on' : 'off');
+const ui = buildUI({
+  canvas: renderer.domElement, act, mode: () => MODE, view: () => ({ i: viewIdx + 1, n: TOUR.length, playing: tour !== null }), onLook: (dx, dy) => look(dx, dy, 0.0045),
+  rows: [
+    ['KeyV', 'Next viewpoint', 'V'],
+    ['KeyB', 'Previous viewpoint', 'B'],
+    ['KeyC', 'Slideshow', 'C', () => onOff(tour !== null)],
+    ['KeyF', 'Fly', 'F', () => onOff(state.fly)],
+    ['Picture', 'Picture', '1-5', () => ['painted', 'paint only', 'underlying 3D', 'normals', 'depth'][params.mode]],
+    ['KeyK', 'Paint filter', 'K', () => onOff(params.kuwahara)],
+    ['KeyL', 'Lines', 'L', () => onOff(params.line)],
+    ['BracketLeft', 'Longer lens', '[', () => params.fov + '°'],
+    ['BracketRight', 'Wider lens', ']'],
+    ['KeyT', 'Telephoto', 'T', () => (params.tele < 0 ? 'auto' : params.tele || 'off')],
+    ['KeyG', 'Upright verticals', 'G', () => onOff(params.shift)],
+    ['KeyP', 'Painter’s licence', 'P', () => onOff(params.licence)],
+    ['KeyH', 'Hide interface', 'H', null, true],
+  ],
+});
+if (!params.hud) ui.show(false);
+const stick = ui.stick;
+addEventListener('keyup', (e) => { keys[e.code] = false; });
+renderer.domElement.addEventListener('click', (e) => { if (e.pointerType !== 'touch') renderer.domElement.requestPointerLock?.(); });
+addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement === renderer.domElement) look(e.movementX, e.movementY, 0.0022);
 });
 function move(dt) {
   const px0 = state.pos.x, pz0 = state.pos.z;
   // the first step is eased in over GAIT.t (the picture, and the lens that follows the walk, start
   // without a jolt); letting go of the keys stops at once. Shift changes the pace over GAIT.shift.
-  const going = keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD || (state.fly && (keys.KeyE || keys.Space || keys.KeyQ));
+  const going = keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD || stick.x || stick.y || (state.fly && (keys.KeyE || keys.Space || keys.KeyQ));
+  if (going) { endTour(); held = false; }
   gait = going ? Math.min(1, gait + dt / GAIT.t) : 0;
-  pace += ((keys.ShiftLeft ? GAIT.run : GAIT.walk) - pace) * Math.min(1, dt / GAIT.shift);
+  pace += ((keys.ShiftLeft || stick.run ? GAIT.run : GAIT.walk) - pace) * Math.min(1, dt / GAIT.shift);
   if (!going) pace = GAIT.walk;
   const sp = pace * dt * gait * gait * (3 - 2 * gait);
   const f = new THREE.Vector3(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
   const r = new THREE.Vector3(-f.z, 0, f.x);
   if (state.fly) f.set(-Math.sin(state.yaw) * Math.cos(state.pitch), Math.sin(state.pitch), -Math.cos(state.yaw) * Math.cos(state.pitch));
-  // one pace in every direction: a diagonal (W+D) is not sqrt(2) faster
-  const dir = new THREE.Vector3().addScaledVector(f, (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0)).addScaledVector(r, (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0));
-  if (dir.lengthSq() > 1e-6) state.pos.addScaledVector(dir.normalize(), sp);
+  // one pace in every direction: a diagonal (W+D) is not sqrt(2) faster (a thumb stick short of its rim is slower)
+  const dir = new THREE.Vector3().addScaledVector(f, (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0) - stick.y).addScaledVector(r, (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0) + stick.x);
+  const dl = dir.length();
+  if (dl > 1e-3) state.pos.addScaledVector(dir, sp * Math.min(1, dl) / dl);
   // on foot, standing stone and trunks are solid: slide along them
-  if (!state.fly) {
+  if (!state.fly && !held) {
     const d1 = standDist(state.pos.x, state.pos.z);
     if (d1 < 0.4) {
       // pushed back out along the gradient of the distance field: one slides round a trunk or a pier,
@@ -163,7 +206,7 @@ function move(dt) {
   velX = (state.pos.x - px0) / Math.max(dt, 1e-4); velZ = (state.pos.z - pz0) / Math.max(dt, 1e-4);
   walkSpeed = Math.hypot(velX, velZ);
   if (state.fly) { if (keys.KeyE || keys.Space) state.pos.y += sp; if (keys.KeyQ) state.pos.y -= sp; }
-  else state.pos.y += (height(state.pos.x, state.pos.z) + 1.65 - state.pos.y) * Math.min(1, dt * 10);
+  else if (!held) state.pos.y += (height(state.pos.x, state.pos.z) + 1.65 - state.pos.y) * Math.min(1, dt * 10);
 }
 
 function resize() {
@@ -188,6 +231,7 @@ function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
   stat.ms += (dt * 1000 - stat.ms) * 0.05; stat.frames++;
   move(dt);
+  if (tour !== null && (tour += dt) > TOUR_HOLD) { goView(1); ui.sync(); }
   time = frozen ?? time + dt;
   // ambient motion is held on a 12 fps cadence ("on twos"), the camera stays smooth
   const tick = Math.floor(time * 12);
@@ -342,30 +386,9 @@ function changeMode(m, instant = false) {
   setMode(m);
   const to = { eve: MODE.eve, snow: MODE.snow };
   trans = !instant && stat.frames > 8 && (from.eve !== to.eve || from.snow !== to.snow) ? { from, to, t: 0 } : null;
-  for (const [k, b] of Object.entries(modeBtn)) { b.textContent = LABEL[k][MODE[k]]; b.setAttribute('aria-pressed', MODE[k] ? 'true' : 'false'); }
+  ui.sync();
 }
-const LABEL = { eve: ['☀ Day', '☾ Evening'], snow: ['✿ Summer', '❄ Winter'] };
-const modeBtn = {};
-{
-  const bar = document.createElement('div');
-  bar.style.cssText = 'position:fixed;right:14px;top:12px;display:flex;gap:8px;font:13px/1 system-ui,sans-serif;z-index:5';
-  for (const k of ['eve', 'snow']) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.title = k === 'eve' ? 'Time of day (N)' : 'Season (M)';
-    b.style.cssText = 'appearance:none;border:1px solid rgba(255,255,255,.55);border-radius:999px;padding:8px 14px;min-width:96px;color:#fff;background:rgba(40,52,60,.38);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);text-shadow:0 1px 2px rgba(0,0,0,.45);cursor:pointer;font:inherit';
-    b.addEventListener('click', (e) => { e.stopPropagation(); changeMode({ [k]: 1 - MODE[k] }); b.blur(); });
-    modeBtn[k] = b; bar.appendChild(b);
-  }
-  document.body.appendChild(bar);
-  if (!params.hud) bar.style.display = 'none';
-  addEventListener('keydown', (e) => {
-    if (e.code === 'KeyN') changeMode({ eve: 1 - MODE.eve });
-    if (e.code === 'KeyM') changeMode({ snow: 1 - MODE.snow });
-    if (e.code === 'KeyH') bar.style.display = params.hud ? '' : 'none';
-  });
-  changeMode({}, true);
-}
+changeMode({}, true);
 
 window.__app = {
   MODE, setMode: (m) => changeMode(m, true),

@@ -38,7 +38,7 @@ sun map); `?licence=0` opens without any of them, and each has its own strength 
 
 ## Deployment
 
-Live site: https://an-visuals.cinne.dev
+Live site: https://chapel.cinne.dev
 
 Hosted on Cloudflare Workers Static Assets. Three.js runs in the browser; no
 server-side Worker code is required. `cloudflare.config.ts` defines the Worker

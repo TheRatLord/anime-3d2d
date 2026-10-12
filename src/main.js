@@ -436,6 +436,7 @@ function changeMode(m, instant = false) {
 }
 const LABEL = { eve: ['☀ Day', '☾ Evening'], snow: ['✿ Summer', '❄ Winter'] };
 const modeBtn = {};
+const modeBtnCSS = 'appearance:none;border:1px solid rgba(255,255,255,.55);border-radius:999px;padding:8px 14px;min-width:96px;color:#fff;background:rgba(40,52,60,.38);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);text-shadow:0 1px 2px rgba(0,0,0,.45);cursor:pointer;font:inherit';
 {
   const bar = document.createElement('div');
   bar.style.cssText = 'position:fixed;right:14px;top:12px;display:flex;gap:8px;font:13px/1 system-ui,sans-serif;z-index:5';
@@ -443,9 +444,24 @@ const modeBtn = {};
     const b = document.createElement('button');
     b.type = 'button';
     b.title = k === 'eve' ? 'Time of day (N)' : 'Season (M)';
-    b.style.cssText = 'appearance:none;border:1px solid rgba(255,255,255,.55);border-radius:999px;padding:8px 14px;min-width:96px;color:#fff;background:rgba(40,52,60,.38);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);text-shadow:0 1px 2px rgba(0,0,0,.45);cursor:pointer;font:inherit';
+    b.style.cssText = modeBtnCSS;
     b.addEventListener('click', (e) => { e.stopPropagation(); changeMode({ [k]: 1 - MODE[k] }); b.blur(); });
     modeBtn[k] = b; bar.appendChild(b);
+  }
+  // quality (src/quality.js): Auto -> High -> Medium -> Low -> Minimum -> Auto
+  {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.style.cssText = modeBtnCSS;
+    const cap = (s) => s[0].toUpperCase() + s.slice(1);
+    const paint = () => {
+      b.textContent = quality.pinned ? '⚙ Custom' : quality.auto ? `⚙ Auto${quality.level ? ' · ' + cap(quality.name) : ''}` : `⚙ ${cap(quality.name)}`;
+      b.title = quality.pinned ? 'Quality is set by the url (msaa / scale)' : 'Quality (U): Auto steps down only if frames are slow';
+      b.disabled = quality.pinned;
+    };
+    b.addEventListener('click', (e) => { e.stopPropagation(); quality.cycle(); b.blur(); });
+    quality.onChange(paint); paint();
+    bar.appendChild(b);
   }
   document.body.appendChild(bar);
   if (!params.hud) bar.style.display = 'none';

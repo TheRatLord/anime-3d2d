@@ -33,7 +33,9 @@ export function createQuality(params, { query, pinned, apply }) {
   let auto = !pinned && (want === null || want === 'auto');
   let level = Math.max(0, byName(want));
   const q = { level, auto, get name() { return LEVELS[this.level].name; }, dpr: LEVELS[level].dpr };
-  const samples = [];
+  const samples = [], listeners = [];
+  q.pinned = pinned;
+  q.onChange = (fn) => { listeners.push(fn); };
   let hold = WARM;
 
   function set(i, manual = false) {
@@ -45,6 +47,7 @@ export function createQuality(params, { query, pinned, apply }) {
     samples.length = 0; hold = SETTLE;
     apply();
     console.info(`[quality] ${L.name}${q.auto ? ' (auto)' : ''}`);
+    for (const fn of listeners) fn(q);
   }
   // the key: through the levels, then back to auto
   q.cycle = () => {

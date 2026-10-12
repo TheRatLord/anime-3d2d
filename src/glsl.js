@@ -3,6 +3,7 @@
 //   oNormal xyz = world normal * .5 + .5,        a = line weight (0 = never draw lines here)
 //   oAux    r = view depth (m), g = shape id (0..1), b = plane id (depth layer), a = flags
 import * as THREE from 'three';
+import { HAZE, stepFog } from './haze.js';
 import { SUBJECT } from './world.js';
 
 // uniforms shared by every material (single object instances, updated once per frame)
@@ -96,9 +97,9 @@ float windAt(vec2 xz){ return uWindAmp * mix(${f(WIND.calm)}, 1.0, windGust(xz))
 // ---- the haze contract: atmosphere is laid in flat steps by distance from the hilltop (the camera never
 // leaves it), like the layers of a background painting. [from this distance (m), this much haze]. The ground
 // (src/terrain.js) and everything beyond the hill (src/extra/far.js) read the same table.
-export const HAZE = [[110, 0.12], [230, 0.24], [380, 0.36], [739, 0.48], [1049, 0.58]];
+export { HAZE };
 export const HAZE_HOLD = +(typeof location !== 'undefined' && new URLSearchParams(location.search).get('hold') || 0.62);
-export const stepFog = (r) => { let a = 0; for (const [d, h] of HAZE) if (r >= d) a = h; return a; };
+export { stepFog };
 export const STEP_FOG_GLSL = `float stepFog(float r){ return ${HAZE.map(([d, h], i) => `r < ${d.toFixed(1)} ? ${(i ? HAZE[i - 1][1] : 0).toFixed(2)} : `).join('')}${HAZE[HAZE.length - 1][1].toFixed(2)}; }`;
 // ---- season and hour (src/mode.js sets uSnow / uEve and the colours of the air).
 // Every colour in the scene is authored for a summer noon. The two other states are laid over that paint, in
@@ -304,12 +305,17 @@ void writeAux(vec3 n, float lineW, float depth, float id, float plane, float fla
 `;
 
 // (hour: false = the material paints its own season and hour - the sky, the clouds)
+// fn(material, forSunMap): told of every material as it is made (src/main.js hands its program to the driver to
+// link at once, while the page goes on building)
+let materialHook = null;
+export const onMaterial = (fn) => { materialHook = fn; };
+
 export function mat({ vs, fs, uniforms = {}, defines = {}, side = THREE.FrontSide, extra = {}, hour = true }) {
   if (hour) {
     if (!/void\s+main\s*\(\s*\)/.test(fs)) throw new Error('mat(): no main() in the fragment shader');
     fs = fs.replace(/void\s+main\s*\(\s*\)/, 'void paintMain()') + '\nvoid main(){ paintMain(); oColor.rgb = hourOf(oColor.rgb); }\n';
   }
-  return new THREE.RawShaderMaterial({
+  const m = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
     vertexShader: HEAD + VS_COMMON + vs,
     fragmentShader: HEAD + FS_COMMON + fs,
@@ -318,6 +324,8 @@ export function mat({ vs, fs, uniforms = {}, defines = {}, side = THREE.FrontSid
     side,
     ...extra,
   });
+  materialHook?.(m, false);
+  return m;
 }
 
 // depth-only materials for the sun shadow pass
@@ -331,11 +339,13 @@ out vec4 o;
 void main(){ o = vec4(0.0, 0.0, 0.0, 1.0); }     // (r = the kind of caster: something solid. Foliage writes 1 - see uShadowKind)
 `;
 export function shadowMat(vs = SHADOW_VS, fs = SHADOW_FS, uniforms = {}, side = THREE.DoubleSide) {
-  return new THREE.RawShaderMaterial({
+  const m = new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3,
     vertexShader: HEAD + VS_COMMON + vs,
     fragmentShader: HEAD + fs,
     uniforms: { ...G, ...uniforms },
     side,
   });
+  materialHook?.(m, true);
+  return m;
 }

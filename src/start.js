@@ -1,3 +1,6 @@
+import { startPainting } from './paint.js';
+// (the textures are painted by worker threads from here on, while the main module is fetched and built)
+startPainting();
 const loading = document.getElementById('loading');
 function fail() {
   loading.querySelector('.loading-ring')?.remove();

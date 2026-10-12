@@ -24,11 +24,12 @@
 // changes), so the vertex shader sees a few thousand instances instead of ~270 000.
 import * as THREE from 'three';
 import { G, mat, WIND_GLSL } from '../glsl.js';
-import { onSun, sunKey } from '../mode.js';
+import { onSun, sunKey, BOOT } from '../mode.js';
 import { rng, height, smooth, onSlab, vnoise, alongPath, PATH_LEN, floorRect, inRect, SUBJECT } from '../world.js';
 import { LAYOUT, composed, added } from '../layout.js';
-import { GRASS_GLSL, FLOWER_HUE_GLSL, FLOWER_COLS, GROUND_UNIFORMS, GMAP, meadowAt, pathEdge, pathInfo, flowerDrift, flowerFam, bloomGather, BAND_SHARE, massRaw, massExtra, MASS2_BOX } from '../terrain.js';
-import { makeTuftAtlas, CELLS, COLS, ROWS, TOP_ROW } from './grass-atlas.js';
+import { GRASS_GLSL, FLOWER_HUE_GLSL, FLOWER_COLS, GROUND_UNIFORMS, GMAP, meadowCh, pathEdge, pathInfo, flowerDrift, flowerFam, bloomGather, BAND_SHARE, massRaw, massExtra, MASS2_BOX } from '../terrain.js';
+import { tuftPixels, CELLS, COLS, ROWS, TOP_ROW } from './grass-atlas.js';
+import { painted } from '../paint.js';
 
 // ---------------------------------------------------------------- categories of tufts
 // fade = where a tuft dissolves into the ground colour (start, end, in metres from the camera).
@@ -821,7 +822,7 @@ export default function (scene) {
     const u = ((x - GMAP.x0) / GMAP.w) * MN_, v = ((z - GMAP.z0) / GMAP.h) * MN_, rp = Math.max(1.2, (rad / GMAP.w) * MN_);
     const x0 = Math.max(1, Math.floor(u - rp)), x1 = Math.min(MN_ - 2, Math.ceil(u + rp)), y0 = Math.max(1, Math.floor(v - rp)), y1 = Math.min(MN_ - 2, Math.ceil(v + rp));
     for (let y = y0; y <= y1; y++) for (let xx = x0; xx <= x1; xx++) {
-      const d = Math.hypot(xx + 0.5 - u, y + 0.5 - v) / rp;
+      const dx = xx + 0.5 - u, dy = y + 0.5 - v, d = Math.sqrt(dx * dx + dy * dy) / rp;
       if (d < 1) acc[y * MN_ + xx] += wgt * (1 - d * d) * (1 - d * d);
     }
   };
@@ -832,7 +833,7 @@ export default function (scene) {
     const u = ((x - GMAP.x0) / GMAP.w) * MN_, v = ((z - GMAP.z0) / GMAP.h) * MN_, rp = Math.max(1.2, (rad / GMAP.w) * MN_);
     const x0 = Math.max(1, Math.floor(u - rp)), x1 = Math.min(MN_ - 2, Math.ceil(u + rp)), y0 = Math.max(1, Math.floor(v - rp)), y1 = Math.min(MN_ - 2, Math.ceil(v + rp));
     for (let y = y0; y <= y1; y++) for (let xx = x0; xx <= x1; xx++) {
-      const d = Math.hypot(xx + 0.5 - u, y + 0.5 - v) / rp;
+      const dx = xx + 0.5 - u, dy = y + 0.5 - v, d = Math.sqrt(dx * dx + dy * dy) / rp;
       if (d < 1) acc[y * MN_ + xx] = Math.max(acc[y * MN_ + xx], wgt * (1 - d * d) * (1 - d * d));
     }
   };
@@ -1044,7 +1045,7 @@ export default function (scene) {
   for (let i = 0; i < 1500; i++) {
     const a = R() * Math.PI * 2, rr = Math.sqrt(R());
     const x = 8.3 + Math.cos(a) * rr * 3.4, z = 1 + Math.sin(a) * rr * 5.6;
-    if (R() > 0.15 + 0.85 * smooth(0.4, 0.6, meadowAt(x * 9 + 3, z * 9 + 40)[3])) continue;
+    if (R() > 0.15 + 0.85 * smooth(0.4, 0.6, meadowCh(x * 9 + 3, z * 9 + 40, 3))) continue;
     const size = R() < 0.7 ? 0.3 + R() * 0.22 : 0.45 + R() * 0.35;
     if (tuft(x, z, kindFor(size), size, 2)) splat(x, z, 0.36, 0.5);
   }
@@ -1116,7 +1117,7 @@ export default function (scene) {
     // core, so that a drift is one shape with a ragged edge. Outside the bodies the grass is left quiet,
     // but for a few stray clusters that keep to loose groups of their own - never an even scatter of dots.)
     const dens = [fd.y, fd.p, fd.w * 0.7];
-    const strayOk = meadowAt(x * 3.1 + 11, z * 3.1 + 5)[3] > 0.63;
+    const strayOk = meadowCh(x * 3.1 + 11, z * 3.1 + 5, 3) > 0.63;
     // (and off the rim of a drift a few loose blooms stand out on the lawn, one to three together)
     const skirtOk = fd.skirt > -0.20 && fd.skirt < -0.03;
     // (inside a drift the clusters GATHER: bloomGather() of src/terrain.js - clumps that hold most of the
@@ -1255,7 +1256,14 @@ export default function (scene) {
   }
 
   // ---------------------------------------------------------------- meshes
-  const atlas = makeTuftAtlas();
+  const atlas = (() => {
+    const { d, W, H, boxB, boxT } = painted.tuft ?? tuftPixels();
+    const tex = new THREE.DataTexture(d, W, H, THREE.RGBAFormat, THREE.UnsignedByteType);
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.minFilter = THREE.LinearMipmapLinearFilter; tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = true; tex.anisotropy = 4; tex.needsUpdate = true;
+    return { tex, boxB: boxB.map((b) => new THREE.Vector2(...b)), boxT: boxT.map((b) => new THREE.Vector3(...b)) };
+  })();
   const perCat = tufts.layers.map((l) => `${l.cat}:${l.rec.length / STRIDE}`).join(' ');
   const tuftMesh = tufts.build([-1, 0, 0, 1, 0, 0, 1, 1, 0, -1, 1, 0, -1, 0, 1, 1, 0, 1, 1, 1, 1, -1, 1, 1], mat({
     vs: TUFT_VS, fs: TUFT_FS, uniforms: { uTuft: { value: atlas.tex }, uBoxB: { value: atlas.boxB }, uBoxT: { value: atlas.boxT }, uContact: GROUND_UNIFORMS.uContact }, side: THREE.DoubleSide,
@@ -1291,7 +1299,8 @@ export default function (scene) {
   // ---------------------------------------------------------------- baked sun term
   // Read the sun shadow map back once (2048^2, depth packed in RGB) and evaluate every instance
   // on the CPU: a wide probe (two rings, up to 0.45 m) through a soft per-instance threshold.
-  const bake = (renderer) => {
+  let pendingMask = null;     // (the sun mask of the opening state, laid after the picture is shown: see sunBake)
+  const bake = (renderer, deferMask = false) => {
     const N = 2048;
     const rt = new THREE.WebGLRenderTarget(N, N, { depthBuffer: false });
     rt.texture.minFilter = rt.texture.magFilter = THREE.NearestFilter; rt.texture.generateMipmaps = false;
@@ -1314,7 +1323,7 @@ export default function (scene) {
     renderer.setRenderTarget(prev);
     rt.dispose(); m.dispose(); tri.geometry.dispose();
     const depth = (u, v) => { const i = (v * N + u) * 4; return px[i] / 255 + px[i + 1] / 65025 + px[i + 2] / 16581375; };
-    const e = G.uShadowMat.value.elements, BIAS = G.uShadowBias.value;
+    const e = G.uShadowMat.value.elements.slice(), BIAS = G.uShadowBias.value;
     const LOOSE = G.uSnow.value > 0.5 ? 0 : Math.min(1, G.uLoose.value);
     const leafAt = (sx, sy) => {
       const u = Math.min(N - 1.001, Math.max(0, sx * N - 0.5)), v = Math.min(N - 1.001, Math.max(0, sy * N - 0.5)), i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j;
@@ -1355,7 +1364,7 @@ export default function (scene) {
     // eleven shadow taps there): every 31 cm cell of the hilltop is probed at 6 x 6 points (5 cm apart - the texel
     // of the sun map) with the shader's own depth test, and the cells with any shaded point are grown by 1.25 m.
     // A cell is cleared only if nothing within a metre and a quarter of it is in shadow.
-    {
+    const mask = () => {
       const MC = MN_ / 2, cs = GMAP.w / MC, may = new Uint8Array(MC * MC), SUB = 6;
       const hg = new Float32Array((MC + 1) * (MC + 1));
       for (let j = 0; j <= MC; j++) for (let i = 0; i <= MC; i++) hg[j * (MC + 1) + i] = height(GMAP.x0 + i * cs, GMAP.z0 + j * cs);
@@ -1386,7 +1395,10 @@ export default function (scene) {
       }
       gtex.needsUpdate = true;
       console.info(`[grass] sun mask: ${(100 * clear / (MC * MC)).toFixed(0)}% of the ground map needs no shadow taps`);
-    }
+    };
+    // (the mask only saves the terrain shader its shadow taps - the picture is the same without it - so for the opening
+    // state it is laid after the picture has been shown: until then the ground map says "may be in shade" everywhere)
+    if (deferMask) pendingMask = mask; else mask();
     let shaded = 0;
     for (const [f, up, ri] of [[tufts, 0.12, 5], [flowers, 0.15, 5], [strokes, 0.1, 4]]) {
       for (let i = 0; i < f.total; i++) {
@@ -1410,13 +1422,19 @@ export default function (scene) {
       return;
     }
     const t0 = performance.now();
-    const n = bake(renderer);
+    const first = !baked;
+    const n = bake(renderer, first);
     // (the ground map with this state's sun mask in its alpha: a texture of its own, so that two states can be
     // drawn in one frame during a change)
     const tex = new THREE.DataTexture(gdata.slice(), MN_, MN_, THREE.RGBAFormat, THREE.UnsignedByteType);
     tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.generateMipmaps = true; tex.needsUpdate = true;
     GROUND_UNIFORMS.uContact.value = tex;
+    if (first && pendingMask) {
+      const mask = pendingMask;
+      pendingMask = null;
+      addEventListener('scene-ready', () => setTimeout(() => { mask(); tex.image.data.set(gdata); tex.needsUpdate = true; }, 50), { once: true });
+    }
     sunKept[key] = { lit: fields.map((f) => { const a = new Float32Array(f.total); for (let i = 0; i < f.total; i++) a[i] = f.src[i * STRIDE + 7]; return a; }), tex };
     console.info(`[grass] baked the sun term (${key}) of ${tufts.total + flowers.total + strokes.total} instances (${n} in shade) in ${(performance.now() - t0).toFixed(0)} ms`);
   };
@@ -1430,8 +1448,8 @@ export default function (scene) {
     prevHook.call(this, renderer, sc, camera, rt);
     if (!camera.isPerspectiveCamera) return;                 // (the sun shadow pass)
     if (!baked && !bakeQueued) {
-      bakeQueued = true;
-      requestAnimationFrame(() => { sunBake(renderer, sunKey()); baked = true; });
+      bakeQueued = true; BOOT.pending++;
+      requestAnimationFrame(() => { sunBake(renderer, sunKey()); baked = true; BOOT.pending--; });
     }
     // (nothing to choose again while the eye stands still)
     _m4.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);

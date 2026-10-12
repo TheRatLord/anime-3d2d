@@ -6,8 +6,9 @@
 // of the tuft (so small tufts are a few fat dabs, tall ones have more, thinner blades) and ends in
 // a rounded tip about half its width. Nothing in the foreground band is thinner than ~3 px at
 // 720p, which is what keeps the paint filter from turning blade edges into crawling stair-steps.
-import * as THREE from 'three';
-import { rng } from '../world.js';
+// (No dependency on the page or on THREE: src/paint.worker.js paints it in a worker thread; src/extra/grass.js
+// makes the texture and the cell boxes of the result.)
+import { rng } from '../rng.js';
 
 export const COLS = 4, ROWS = 7;
 // the last two rows hold the tufts as seen from ABOVE (kinds 10-17): low clumps lying on the ground.
@@ -23,9 +24,12 @@ export const TOP_ROW = 5;
 const KIND = [0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 9, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 export const CELLS = Array.from({ length: 10 }, (_, k) => KIND.map((v, i) => (v === k ? i : -1)).filter((i) => i >= 0));
 
-export function makeTuftAtlas(cell = 256) {
+export function tuftPixels(cell = 256) {
   const W = cell * COLS, H = cell * ROWS;
-  const mk = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; };
+  const mk = () => {
+    if (typeof document === 'undefined') return new OffscreenCanvas(W, H);
+    const c = document.createElement('canvas'); c.width = W; c.height = H; return c;
+  };
   const cm = mk(), ct = mk();
   const m = cm.getContext('2d', { willReadFrequently: true }), t = ct.getContext('2d', { willReadFrequently: true });
   m.fillStyle = '#000'; m.fillRect(0, 0, W, H);
@@ -234,7 +238,7 @@ export function makeTuftAtlas(cell = 256) {
   // all as fractions of the cell
   const boxB = [], boxT = [];
   for (let v = 0; v < COLS * ROWS; v++) {
-    if (KIND[v] >= 10) { boxB.push(new THREE.Vector2(0, 1)); boxT.push(new THREE.Vector3(0, 1, 1)); continue; }
+    if (KIND[v] >= 10) { boxB.push([0, 1]); boxT.push([0, 1, 1]); continue; }
     const cx0 = (v % COLS) * cell, cy0 = Math.floor(v / COLS) * cell;
     const px = [];
     let x0 = cell, x1 = 0, top = 0, b0 = cell, b1 = 0;
@@ -259,12 +263,8 @@ export function makeTuftAtlas(cell = 256) {
     }
     if (t0 < 0) ok0 = false; if (t1 > cell) ok1 = false;
     // (a side that would leave the cell falls back to the straight side of the box)
-    boxB.push(new THREE.Vector2((ok0 ? b0 : x0) / cell, (ok1 ? b1 : x1) / cell));
-    boxT.push(new THREE.Vector3((ok0 ? t0 : x0) / cell, (ok1 ? t1 : x1) / cell, top / cell));
+    boxB.push([(ok0 ? b0 : x0) / cell, (ok1 ? b1 : x1) / cell]);
+    boxT.push([(ok0 ? t0 : x0) / cell, (ok1 ? t1 : x1) / cell, top / cell]);
   }
-  const tex = new THREE.DataTexture(out, W, H, THREE.RGBAFormat, THREE.UnsignedByteType);
-  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.minFilter = THREE.LinearMipmapLinearFilter; tex.magFilter = THREE.LinearFilter;
-  tex.generateMipmaps = true; tex.anisotropy = 4; tex.needsUpdate = true;
-  return { tex, boxB, boxT };
+  return { d: out, W, H, boxB, boxT };
 }

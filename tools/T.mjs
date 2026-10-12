@@ -1,0 +1,11 @@
+import { chromium } from 'playwright-core';
+import http from 'http'; import fs from 'fs'; import path from 'path';
+const dir = path.resolve('.cloudflare/output/v0/workers/default/assets');
+const srv0 = http.createServer((req, res) => { let f = path.join(dir, req.url.split('?')[0]); if (f.endsWith('/')) f += 'index.html'; fs.readFile(f, (e, d) => { if (e) { res.writeHead(404); res.end(); } else { res.writeHead(200, { 'content-type': f.endsWith('.js') ? 'text/javascript' : f.endsWith('.html') ? 'text/html' : 'application/octet-stream' }); res.end(d); } }); });
+await new Promise((r) => srv0.listen(0, r));
+const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, args: ['--use-angle=vulkan', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu'] });
+const p = await b.newPage();
+await p.goto(`http://localhost:${srv0.address().port}/?hud=0&prebake=0`);
+await p.waitForFunction(() => window.__app && window.__app.stat.frames > 5);
+console.log(await p.evaluate(() => window.__T));
+await b.close(); srv0.close();

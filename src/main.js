@@ -1,15 +1,16 @@
 import './setup.js';
 import * as THREE from 'three';
-import { G } from './glsl.js';
+import { G, onMaterial } from './glsl.js';
 import { Pipeline } from './pipeline.js';
 import { makeBrushTexture, makeCloudTexture, makeLeafAtlas, makeGrassAtlas, makePaperTexture } from './brush.js';
 import { SUN, SUBJECT, height } from './world.js';
 import { LAYOUT } from './layout.js';
-import { buildTerrain } from './terrain.js';
+import { buildTerrain, fillPlan } from './terrain.js';
 import { buildSky } from './sky.js';
 import { buildRuin } from './ruin.js';
 import { VIEWS } from './views.js';
-import { MODE, setMode, sunDir, sunKey, sunPainted } from './mode.js';
+import { whenPainted, painted } from './paint.js';
+import { MODE, setMode, sunDir, sunKey, sunPainted, BOOT, flushDeferred, onDeferred } from './mode.js';
 
 const params = {
   msaa: 4, kuwahara: 3, line: 0.8, quiet: 1, counter: 1, bloom: 0.3, grain: 0.035, vignette: 0.2,
@@ -33,18 +34,84 @@ document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(params.fov, 1, 0.3, 6000);
 
-G.uBrush.value = makeBrushTexture();
-const cloudTex = makeCloudTexture();
-const tex = { cloud: cloudTex, leaf: makeLeafAtlas(), grass: makeGrassAtlas(), paper: makePaperTexture() };
-
 const pipe = new Pipeline(renderer, params);
-pipe.final.uniforms.tPaper.value = tex.paper;
 
-buildSky(scene, cloudTex);
+// Shader programs are linked by the GPU process while the page goes on building: after each stage everything
+// built so far is handed to the driver (renderer.compile only issues the links; nothing waits), so that the
+// first frame finds its programs ready instead of waiting for each in turn.
+const casters = new Set();
+function precompile() {
+  scene.updateMatrixWorld(true);
+  const prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(pipe.gbuf);
+  renderer.compile(scene, camera);
+  // (the sun map's materials: see Pipeline.renderShadow)
+  renderer.setRenderTarget(pipe.shadowRT());
+  scene.traverse((o) => {
+    if (!o.isMesh || !o.userData.shadowMat || casters.has(o.userData.shadowMat)) return;
+    casters.add(o.userData.shadowMat);
+    const m = o.material;
+    o.material = o.userData.shadowMat;
+    renderer.compile(o, camera, scene);
+    o.material = m;
+  });
+  renderer.setRenderTarget(prev);
+}
+onDeferred(precompile);
+resize();
+pipe.precompile();
+{
+  const none = new THREE.BufferGeometry();
+  onMaterial((m, forSunMap) => {
+    const prev = renderer.getRenderTarget();
+    renderer.setRenderTarget(forSunMap ? pipe.shadowRT() : pipe.gbuf);
+    renderer.compile(new THREE.Mesh(none, m), camera, scene);
+    renderer.setRenderTarget(prev);
+  });
+}
 buildTerrain(scene);
 buildRuin(scene);
+precompile();
+// (the textures are painted by workers meanwhile: each is waited for only where it is first needed. The brush
+// map is only read by shaders, so it is waited for last)
+await whenPainted('cloud', 'paper');
+const cloudTex = makeCloudTexture();
+const tex = { cloud: cloudTex, leaf: makeLeafAtlas(), grass: makeGrassAtlas(), paper: makePaperTexture() };
+pipe.final.uniforms.tPaper.value = tex.paper;
+{
+  const n0 = scene.children.length;
+  buildSky(scene, cloudTex);
+  scene.children.unshift(...scene.children.splice(n0));
+}
+precompile();
+await whenPainted('plan');
+fillPlan(painted.plan);       // (the planned drifts of the meadow: first read by src/extra/grass.js)
+// the extras, those that wait for no texture first
+const NEEDS = {
+  './extra/tree.js': ['foliage'],
+  './extra/grass.js': ['tuft'],
+  './extra/far.js': ['crown', 'hills', 'crowns'],
+};
+const RANK = { './extra/far.js': 4 };
 const mods = import.meta.glob('./extra/*.js', { eager: true });
-for (const m of Object.values(mods)) m.default?.(scene, tex, params);
+const added = new Map();
+for (const [path, m] of Object.entries(mods).sort((a, b) => (RANK[a[0]] ?? 0) - (RANK[b[0]] ?? 0))) {
+  if (NEEDS[path]) await whenPainted(...NEEDS[path]);
+  const n0 = scene.children.length;
+  m.default?.(scene, tex, params);
+  added.set(path, scene.children.splice(n0));
+  scene.children.push(...added.get(path));
+  precompile();
+}
+// (but laid in the scene in the order of the files, as they were when they were built in that order)
+{
+  const all = new Set([...added.values()].flat());
+  const rest = scene.children.filter((o) => !all.has(o));
+  scene.children.length = 0;
+  scene.children.push(...rest, ...Object.keys(mods).flatMap((p) => added.get(p)));
+}
+await whenPainted('brush');
+G.uBrush.value = makeBrushTexture();
 
 // Everything the walker and the lens keep clear of comes from the layout (src/layout.js): LAYOUT.walls
 // (long faces), LAYOUT.stand (upright things, as circles) and LAYOUT.lying (stones lying about). The lists
@@ -305,23 +372,38 @@ function frame(now) {
     pipe.final.uniforms.uHold.value = 1 - k;
   } else {
     pipe.final.uniforms.uHold.value = 0;
-    applyState(MODE, null, stat.frames < 8);
+    applyState(MODE, null, stat.frames < 3);
   }
   pipe.render(scene, camera);
-  // Behind the loading screen, once the opening state stands: the three other states are visited once, so that
-  // what each bakes from its sun map (src/mode.js onSun) is done before anyone can ask for a change - a change
-  // of hour or season then never stalls. (?prebake=0 skips it: the first visit to a state bakes it instead.)
-  if (stat.frames === 9) {
-    if (q.get('prebake') !== '0') {
-      const here = { eve: MODE.eve, snow: MODE.snow };
-      for (const m of [{ eve: 1 - here.eve, snow: here.snow }, { eve: 1 - here.eve, snow: 1 - here.snow }, { eve: here.eve, snow: 1 - here.snow }]) applyState(m, null);
-      applyState(here, null);
-    }
+  // Once the opening state stands the picture is shown. The three other states are then visited once, one per
+  // idle moment while the viewer stands still, so that what each bakes from its sun map (src/mode.js onSun) is
+  // done before a change of hour or season is asked for - which then never stalls. (?prebake=0 skips it: the
+  // first visit to a state bakes it instead; a change asked for sooner than that bakes its state on the spot.)
+  if (stat.frames >= 4 && !readyFired && !BOOT.pending) {
+    readyFired = true;
     performance.mark('scene-ready');
     dispatchEvent(new Event('scene-ready'));
+    if (q.get('prebake') !== '0') {
+      const todo = [[1, 0], [1, 1], [0, 1], [0, 0]].map(([eve, snow]) => ({ eve, snow })).filter((m) => m.eve !== MODE.eve || m.snow !== MODE.snow);
+      const step = () => {
+        if (!todo.length) return;
+        if (trans || walkSpeed > 0.05) return void setTimeout(step, 400);
+        flushDeferred();
+        const here = { eve: MODE.eve, snow: MODE.snow };
+        applyState(todo.shift(), null);
+        applyState(here, null);
+        setTimeout(step, 150);
+      };
+      setTimeout(step, 600);
+    }
   }
-  requestAnimationFrame(frame);
+  // (the opening frames, behind the loading screen, follow one another without waiting for the display)
+  if (readyFired) requestAnimationFrame(frame); else bootStep();
 }
+let readyFired = false;
+const bootChannel = new MessageChannel();
+bootChannel.port1.onmessage = () => frame(performance.now());
+const bootStep = () => bootChannel.port2.postMessage(0);
 requestAnimationFrame(frame);
 
 // ---------------------------------------------------------------- the hour and the season
@@ -341,7 +423,7 @@ function changeMode(m, instant = false) {
   const from = { eve: MODE.eve, snow: MODE.snow };
   setMode(m);
   const to = { eve: MODE.eve, snow: MODE.snow };
-  trans = !instant && stat.frames > 8 && (from.eve !== to.eve || from.snow !== to.snow) ? { from, to, t: 0 } : null;
+  trans = !instant && stat.frames > 3 && (from.eve !== to.eve || from.snow !== to.snow) ? { from, to, t: 0 } : null;
   for (const [k, b] of Object.entries(modeBtn)) { b.textContent = LABEL[k][MODE[k]]; b.setAttribute('aria-pressed', MODE[k] ? 'true' : 'false'); }
 }
 const LABEL = { eve: ['☀ Day', '☾ Evening'], snow: ['✿ Summer', '❄ Winter'] };

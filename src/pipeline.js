@@ -67,6 +67,30 @@ float describe(vec2 uv){
 }
 `;
 
+// The 37 taps of the Kuwahara filter, and what each adds to which of the eight sectors, laid out as straight
+// code: the weights depend on the tap alone, and a tap lies in only some of the sectors (the rest add nothing).
+const KUWAHARA_TAPS = (() => {
+  const zeta = 2 / 3, zc = 0.58, eta = (zeta + Math.cos(zc)) / (Math.sin(zc) * Math.sin(zc));
+  const f = (x) => { const t = Math.fround(x).toPrecision(9); return /[.e]/.test(t) ? t : t + '.0'; };
+  let out = '';
+  for (let j = -3; j <= 3; j++) for (let i = -3; i <= 3; i++) {
+    const vx = i / 3, vy = j / 3;
+    if (vx * vx + vy * vy > 1) continue;
+    const w = new Array(8).fill(0);
+    let vxx = zeta - eta * vx * vx, vyy = zeta - eta * vy * vy, z, sum = 0;
+    const put = (k, a) => { z = Math.max(0, a); w[k] = z * z; sum += w[k]; };
+    put(0, vy + vxx); put(2, -vx + vyy); put(4, -vy + vxx); put(6, vx + vyy);
+    const ux = 0.70710678 * (vx - vy), uy = 0.70710678 * (vx + vy);
+    vxx = zeta - eta * ux * ux; vyy = zeta - eta * uy * uy;
+    put(1, uy + vxx); put(3, -ux + vyy); put(5, -uy + vxx); put(7, ux + vyy);
+    const g = Math.exp(-3.125 * (vx * vx + vy * vy)) / Math.max(sum, 1e-5);
+    out += `  { vec3 c = textureLod(tColor, vUv + vec2(${i}.0, ${j}.0) * stepPx * uTexel, lod).rgb; vec3 cc = c * c;\n`;
+    for (let k = 0; k < 8; k++) if (w[k] > 0) out += `    { float wk = ${f(w[k] * g)}; m[${k}] += vec4(c * wk, wk); s[${k}] += cc * wk; }\n`;
+    out += '  }\n';
+  }
+  return out;
+})();
+
 // ---- 1. paint filter: 4-sector Kuwahara. Flattens small detail into dabs, rounds corners,
 // keeps edges hard. Per-pixel strength comes from colour alpha.
 const KUWAHARA_FS = /* glsl */`
@@ -93,28 +117,7 @@ void main(){
   float eta = (zeta + cos(zc)) / (sin(zc) * sin(zc));
   vec4 m[8]; vec3 s[8];
   for (int k = 0; k < 8; k++){ m[k] = vec4(0.0); s[k] = vec3(0.0); }
-  for (int j = -R; j <= R; j++) for (int i = -R; i <= R; i++){
-    vec2 v = vec2(float(i), float(j)) / 3.0;
-    if (dot(v, v) > 1.0) continue;
-    vec3 c = textureLod(tColor, vUv + vec2(float(i), float(j)) * stepPx * uTexel, lod).rgb;
-    float w[8]; float sum = 0.0; float z, vxx, vyy;
-    vxx = zeta - eta * v.x * v.x; vyy = zeta - eta * v.y * v.y;
-    z = max(0.0,  v.y + vxx); w[0] = z * z; sum += w[0];
-    z = max(0.0, -v.x + vyy); w[2] = z * z; sum += w[2];
-    z = max(0.0, -v.y + vxx); w[4] = z * z; sum += w[4];
-    z = max(0.0,  v.x + vyy); w[6] = z * z; sum += w[6];
-    vec2 u = 0.70710678 * vec2(v.x - v.y, v.x + v.y);
-    vxx = zeta - eta * u.x * u.x; vyy = zeta - eta * u.y * u.y;
-    z = max(0.0,  u.y + vxx); w[1] = z * z; sum += w[1];
-    z = max(0.0, -u.x + vyy); w[3] = z * z; sum += w[3];
-    z = max(0.0, -u.y + vxx); w[5] = z * z; sum += w[5];
-    z = max(0.0,  u.x + vyy); w[7] = z * z; sum += w[7];
-    float g = exp(-3.125 * dot(v, v)) / max(sum, 1e-5);
-    for (int k = 0; k < 8; k++){
-      float wk = w[k] * g;
-      m[k] += vec4(c * wk, wk); s[k] += c * c * wk;
-    }
-  }
+${KUWAHARA_TAPS}
   vec4 acc = vec4(0.0);
   for (int k = 0; k < 8; k++){
     m[k].rgb /= max(m[k].w, 1e-5);
@@ -592,6 +595,18 @@ export class Pipeline {
     this.qTexel = new THREE.Vector2(1 / qw, 1 / qh);
   }
 
+  // hands the post passes to the driver to link (see precompile() in src/main.js); nothing waits for them
+  precompile() {
+    const r = this.r, prev = r.getRenderTarget();
+    for (const [m, t] of [[this.kuw, this.rtA], [this.depthDown, this.q1], [this.litDown, this.q3], [this.blur, this.q2], [this.comp, this.rtB],
+      [this.bright, this.b1], [this.final, this.hold], [this.final, null]]) {
+      this.tri.material = m;
+      r.setRenderTarget(t);
+      r.compile(this.fsScene, this.fsCam);
+    }
+    r.setRenderTarget(prev);
+  }
+
   _fs(material, target) {
     this.tri.material = material;
     this.r.setRenderTarget(target);
@@ -605,11 +620,8 @@ export class Pipeline {
     if (!slot) {
       if (this.shadowSlots.length < 2) {
         // (its colour is the kind of caster - G.uShadowKind - read blurred, from the mips)
-        const S = 4096, rt = new THREE.WebGLRenderTarget(S, S, { depthBuffer: true, format: THREE.RedFormat });
-        rt.texture.minFilter = THREE.LinearMipmapLinearFilter; rt.texture.magFilter = THREE.LinearFilter; rt.texture.generateMipmaps = true;
-        rt.depthTexture = new THREE.DepthTexture(S, S, THREE.UnsignedIntType);
-        rt.depthTexture.minFilter = rt.depthTexture.magFilter = THREE.NearestFilter;
-        slot = { rt, mat: new THREE.Matrix4(), used: 0 };
+        slot = { rt: this.shadowRT(), mat: new THREE.Matrix4(), used: 0 };
+        this._preRT = null;
         this.shadowSlots.push(slot);
       } else slot = this.shadowSlots.filter((q) => q.key !== keep).sort((a, b) => a.used - b.used)[0];
       slot.key = key; force = true;
@@ -620,6 +632,16 @@ export class Pipeline {
     G.uShadowKind.value = slot.rt.texture;
     G.uShadowMat.value.copy(slot.mat);
     return painted;
+  }
+
+  // a sun map target (the one the next slot will take, so that programs can be linked for it before it is wanted)
+  shadowRT() {
+    if (this._preRT) return this._preRT;
+    const S = 4096, rt = new THREE.WebGLRenderTarget(S, S, { depthBuffer: true, format: THREE.RedFormat });
+    rt.texture.minFilter = THREE.LinearMipmapLinearFilter; rt.texture.magFilter = THREE.LinearFilter; rt.texture.generateMipmaps = true;
+    rt.depthTexture = new THREE.DepthTexture(S, S, THREE.UnsignedIntType);
+    rt.depthTexture.minFilter = rt.depthTexture.magFilter = THREE.NearestFilter;
+    return (this._preRT = rt);
   }
 
   renderShadow(scene, sunDir, center, slot) {

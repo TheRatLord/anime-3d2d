@@ -12,8 +12,9 @@ const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', head
 const p = await b.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: 1 });
 await p.goto(srv.url + '?hud=0&' + (flags.q || ''));
 await p.waitForFunction(() => window.__app && window.__app.stat.frames > 3, null, { timeout: 30000 });
+await p.waitForTimeout(4000);
 await p.evaluate((v) => { window.__app.view(v); }, view);
-const ms = () => p.evaluate(() => new Promise(r => { let n = 0, t0; const f = () => { if (n === 20) t0 = performance.now(); if (++n >= 140) r((performance.now() - t0) / 120); else requestAnimationFrame(f); }; f(); }));
+const ms = () => p.evaluate(() => new Promise(r => { const gl = window.__app.renderer.getContext(), px = new Uint8Array(4); let n = 0, t0; const f = () => { gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); if (n === 20) t0 = performance.now(); if (++n >= 140) r((performance.now() - t0) / 120); else requestAnimationFrame(f); }; f(); }));
 const base = await ms();
 console.log(`${view} ${W}x${H} baseline ${base.toFixed(2)} ms`);
 const n = await p.evaluate(() => { window.__m = []; window.__app.scene.traverse(o => { if (o.isMesh) window.__m.push(o); }); return window.__m.length; });

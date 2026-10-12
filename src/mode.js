@@ -30,6 +30,20 @@ const AIR = {
 };
 
 export const MODE = { eve: 0, snow: 0 };
+// Things that are drawn only under snow (the drifts laid on the stone) are not built for a summer picture until
+// it is wanted: deferBuild(fn) runs fn at once under snow, otherwise at flushDeferred() - which main.js calls
+// when the picture has been shown, and which setMode() calls the moment snow is asked for.
+const deferred = [];
+let afterFlush = null;
+export const deferBuild = (fn) => { if (MODE.snow) fn(); else deferred.push(fn); };
+export const onDeferred = (fn) => { afterFlush = fn; };
+export function flushDeferred() {
+  if (!deferred.length) return;
+  for (const fn of deferred.splice(0)) fn();
+  afterFlush?.();
+}
+// work queued for the next animation frame that the opening picture must wait for (src/main.js scene-ready)
+export const BOOT = { pending: 0 };
 const sunHooks = [], changeHooks = [];
 // fn(renderer, key): the sun map of the state `key` (see sunKey) has just become the current one
 export const onSun = (fn) => { sunHooks.push(fn); };
@@ -44,6 +58,7 @@ export const sunKey = (m = MODE) => `${m.eve ? 'eve' : 'day'}${m.snow ? '-snow' 
 export function setMode({ eve = MODE.eve, snow = MODE.snow } = {}) {
   eve = eve ? 1 : 0; snow = snow ? 1 : 0;
   MODE.eve = eve; MODE.snow = snow;
+  if (snow) flushDeferred();
   G.uEve.value = eve; G.uSnow.value = snow;
   const air = AIR[`${eve}${snow}`];
   G.uHazeCol.value.setHex(air[0]); G.uHazeFarCol.value.setHex(air[1]);

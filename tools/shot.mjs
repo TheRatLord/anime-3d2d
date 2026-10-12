@@ -22,7 +22,7 @@ if (!views.length || views[0] === 'all') views = await p.evaluate(() => Object.k
 await p.evaluate((t) => window.__app.freeze(t), +(flags.t || 3));
 for (const v of views) {
   await p.evaluate((v) => window.__app.view(v), v);
-  await p.evaluate(() => new Promise(r => { let n = 0; const f = () => (++n > 4 ? r() : requestAnimationFrame(f)); f(); }));
+  await p.evaluate((N) => new Promise(r => { let n = 0; const f = () => (++n > N ? r() : requestAnimationFrame(f)); f(); }), +(process.env.SHOT_FRAMES || 4));
   await p.screenshot({ path: `shots/${tag}-${v}.png` });
 }
 // frame time on the last view (vsync disabled)

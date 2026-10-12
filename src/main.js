@@ -10,6 +10,7 @@ import { buildSky } from './sky.js';
 import { buildRuin } from './ruin.js';
 import { VIEWS } from './views.js';
 import { whenPainted, painted } from './paint.js';
+import { createQuality } from './quality.js';
 import { MODE, setMode, sunDir, sunKey, sunPainted, BOOT, flushDeferred, onDeferred } from './mode.js';
 
 const params = {
@@ -23,6 +24,9 @@ const params = {
 };
 const q = new URLSearchParams(location.search);
 for (const k of Object.keys(params)) if (q.has(k)) params[k] = parseFloat(q.get(k));
+// how much the picture costs (src/quality.js). Naming msaa or scale in the url, or a frozen clock (a repeatable test
+// picture), holds the picture at what is given; otherwise it opens at "high" and falls only when it cannot keep up.
+const quality = createQuality(params, { query: q, pinned: q.has('msaa') || q.has('scale') || (q.has('t') && !q.has('quality')), apply: () => resize() });
 // the hour and the season the picture opens in: ?eve=1 (or ?time=evening), ?snow=1 (or ?season=winter)
 setMode({ eve: q.get('eve') === '1' || /^eve/.test(q.get('time') ?? ''), snow: q.get('snow') === '1' || /^(snow|winter)/.test(q.get('season') ?? '') });
 
@@ -170,6 +174,7 @@ addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'KeyF') state.fly = !state.fly;
   if (/^Digit[1-5]$/.test(e.code)) params.mode = +e.code.slice(5) - 1;
+  if (e.code === 'KeyU') quality.cycle();
   if (e.code === 'KeyH') { params.hud = 1 - params.hud; hud.style.display = params.hud ? '' : 'none'; }
   if (e.code === 'KeyK') params.kuwahara = params.kuwahara ? 0 : 3;
   if (e.code === 'KeyL') params.line = params.line ? 0 : 0.8;
@@ -234,7 +239,8 @@ function move(dt) {
 }
 
 function resize() {
-  const w = Math.floor(innerWidth * params.scale * Math.min(devicePixelRatio, 1.5)), h = Math.floor(innerHeight * params.scale * Math.min(devicePixelRatio, 1.5));
+  const dpr = Math.min(devicePixelRatio, quality.dpr);
+  const w = Math.floor(innerWidth * params.scale * dpr), h = Math.floor(innerHeight * params.scale * dpr);
   renderer.setSize(w, h, false);
   pipe.setSize(w, h);
   camera.aspect = w / h;
@@ -252,7 +258,9 @@ let gait = 0, pace = GAIT.walk, freeX = 9, freeZ = 22;
 const stat = { ms: 0, frames: 0 }, lens = {};
 const fwd = new THREE.Vector3();
 function frame(now) {
-  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  const dt = Math.min(0.1, (now - last) / 1000);
+  if (readyFired) quality.tick(now - last, !!trans);
+  last = now;
   stat.ms += (dt * 1000 - stat.ms) * 0.05; stat.frames++;
   move(dt);
   time = frozen ?? time + dt;
@@ -451,7 +459,7 @@ const modeBtn = {};
 
 window.__app = {
   MODE, setMode: (m) => changeMode(m, true),
-  params, state, stat, lens, scene, camera, renderer, pipe, VIEWS, setView,
+  params, quality, state, stat, lens, scene, camera, renderer, pipe, VIEWS, setView,
   view: (name) => setView(VIEWS[name]),
   freeze: (t) => { frozen = t; },
   gpu: () => { const gl = renderer.getContext(); const e = gl.getExtension('WEBGL_debug_renderer_info'); return e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : 'unknown'; },

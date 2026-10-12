@@ -810,8 +810,9 @@ class Cards {
     // sway, and what the eye may move before the list is renewed: 2 m, ROT degrees) touches the frustum. The
     // sun map needs them all (it is drawn from the sun, with an orthographic camera) and gets the full list.
     const ROT = 10, cosHalfRot = Math.cos((ROT * Math.PI) / 360), sinRot = Math.sin((ROT * Math.PI) / 180);
-    const SIZE = src[1], frustum = new THREE.Frustum(), pv = new THREE.Matrix4(), lastQ = new THREE.Quaternion(), built = new THREE.Vector3(1e9, 0, 0), lastP = new Float32Array(4);
+    const SIZE = src[1], frustum = new THREE.Frustum(), pv = new THREE.Matrix4(), lastQ = new THREE.Quaternion(), built = new THREE.Vector3(1e9, 0, 0), lastP = new Float64Array(4);   // (float64, as it is compared with the projection's)
     let full = false;
+    const restP = new THREE.Vector3(1e9, 0, 0), restQ = new THREE.Quaternion();
     const sort = (c, cam, cull, eye) => {
       count.fill(0);
       if (cull) frustum.setFromProjectionMatrix(pv.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
@@ -854,7 +855,13 @@ class Cards {
       // view whenever the eye has moved 2 m, or turned ROT degrees, from where that was last made)
       const moved = full || cam.position.distanceToSquared(built) > 4 || lastP[0] !== pe[0] || lastP[1] !== pe[5] || lastP[2] !== pe[8] || lastP[3] !== pe[9]
         || Math.abs(lastQ.dot(cam.quaternion)) < cosHalfRot;
-      if (!moved) return;
+      // (and when the eye comes to rest anywhere but where the list was made, once more: a picture that stands
+      // still is always the one made for exactly where it is seen from)
+      const still = cam.position.equals(restP) && restQ.equals(cam.quaternion);
+      restP.copy(cam.position); restQ.copy(cam.quaternion);
+      if (!moved) {
+        if (!still || (cam.position.equals(built) && lastQ.equals(cam.quaternion))) return;
+      }
       if (cam.position.distanceToSquared(last) > 4) last.copy(cam.position);
       full = false; built.copy(cam.position); lastQ.copy(cam.quaternion); lastP[0] = pe[0]; lastP[1] = pe[5]; lastP[2] = pe[8]; lastP[3] = pe[9];
       sort(last, cam, CULL, built);

@@ -4,7 +4,7 @@ import { chromium } from 'playwright-core';
 import { serve } from './serve.mjs';
 const srv = await serve();
 const args = process.argv.slice(2);
-const flags = Object.fromEntries(args.filter(a => a.startsWith('--')).map(a => a.slice(2).split('=')));
+const flags = Object.fromEntries(args.filter(a => a.startsWith('--')).map(a => a.slice(2).split(/=(.*)/s).slice(0, 2)));
 const view = args.find(a => !a.startsWith('--')) || 'hero';
 const W = +(flags.w || 1280), H = +(flags.h || 720);
 const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true,

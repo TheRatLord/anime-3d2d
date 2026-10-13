@@ -75,7 +75,7 @@ vec2 sidePlane(vec3 w, vec4 cr, out float k){
 const DEEP_GLSL = /* glsl */`
 const float DEEP_TH = 0.54;
 const float HOLE_K = 0.31;
-const float CORE_NEAR = 3.7;     // metres from the eye inside which cores and base masses are taken away
+const float CORE_NEAR = 1.2;     // metres from the eye inside which cores and base masses are taken away (a bush is still a bush at arm's length)
 float deepMask(vec3 p){
   // Two readings of the brush texture on planes at right angles to each other. A single reading of a 2D
   // texture is constant along one line in space; through the depth of a crown (card behind card) its edges
@@ -211,7 +211,7 @@ void main(){
   // keep the crown closed; within a few metres of the lens they come down to the cap of every other card,
   // or one flat mass fills a third of the frame)
   float capK = variant < 3.5 ? mix(1.0, 2.1, smoothstep(BASE_NEAR0, BASE_NEAR1, cd)) : 1.0;
-  size = min(size, uMaxPx * capK * uPixelK * cd * smoothstep(0.15, 1.2, cd));
+  size = min(size, uMaxPx * capK * uPixelK * cd * smoothstep(0.3, 0.9, cd));
   // the side holes of the crown (see sideHole): a dark spray standing in one shrinks away
   float holeK = 0.0;
   vec3 pP = texelFetch(uPal, ivec2(6, int(iTree + 0.5)), 0).rgb;

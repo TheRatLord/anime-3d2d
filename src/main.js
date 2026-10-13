@@ -240,8 +240,19 @@ quality.onChange(() => ui.sync());
 const stick = ui.stick;
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 renderer.domElement.addEventListener('click', (e) => { if (e.pointerType !== 'touch') renderer.domElement.requestPointerLock?.(); });
+// Pointer lock now and then delivers one wild delta (the cursor being re-centred, on gaining or regaining the lock or
+// the window's focus): a single event of a thousand pixels, which is a half turn of the head. A real hand does not
+// move that far between two frames, so such an event is dropped, and so is the first after the lock changes.
+const LOOK = { rate: 0.0022, max: 400 };
+let lookSkip = 1;
+document.addEventListener('pointerlockchange', () => { lookSkip = 2; });
+addEventListener('blur', () => { lookSkip = 2; });
+addEventListener('focus', () => { lookSkip = 2; });
 addEventListener('mousemove', (e) => {
-  if (document.pointerLockElement === renderer.domElement) look(e.movementX, e.movementY, 0.0022);
+  if (document.pointerLockElement !== renderer.domElement) return;
+  if (lookSkip > 0) { lookSkip--; return; }
+  if (Math.abs(e.movementX) > LOOK.max || Math.abs(e.movementY) > LOOK.max) return;
+  look(e.movementX, e.movementY, LOOK.rate);
 });
 function move(dt) {
   const px0 = state.pos.x, pz0 = state.pos.z;
@@ -302,6 +313,11 @@ let pullS = 0, pullT = 0, laX = 0, laZ = 0, lensSnap = true, walkSpeed = 0, velX
 const LENS = { vel: 0.2, ahead: [0.5, 1, 1.5, 2, 3, 4, 5, 6.5, 8, 10, 12.5], down: 0.35, up: 0.2, t2: 0.15, k: 0.4 };
 const GAIT = { t: 0.18, shift: 0.12, walk: 4.2, run: 10 };
 let gait = 0, pace = GAIT.walk, freeX = 9, freeZ = 22;
+// where the camera stands relative to the viewer (metres, on the level). Turning the head turns the camera where it
+// stands, so this does not follow the yaw; it comes round behind the viewer only as one walks, at most CAM.settle
+// metres per metre walked (so the walk is never visibly sped up or held back by it).
+const CAM = { settle: 0.3 };
+let camX = 0, camZ = 0;
 const stat = { ms: 0, frames: 0 }, lens = {};
 const fwd = new THREE.Vector3();
 function frame(now) {
@@ -366,6 +382,7 @@ function frame(now) {
   let clear = c0;
   if (laL > 1e-4) for (const d of LENS.ahead) clear = Math.min(clear, clampAt(d) + 0.75 * LENS.down * d);
   const tgt = smin(want, clear);
+  const snapped = lensSnap;
   if (lensSnap) pullS = pullT = smin(want, c0);
   else if (moving) {
     // the first stage follows the target at a capped rate per metre walked, the second rounds its corners.
@@ -376,40 +393,54 @@ function frame(now) {
   }
   pullT = Math.min(pullT, c0); pullS = Math.min(pullS, c0); lensSnap = false;
   lens.pullS = pullS; lens.c0 = c0; lens.want = want; lens.tgt = tgt; lens.lowCap = lowCap; lens.D = D;
-  // The camera stands BEHIND the viewer by the pull, on the level: turning the head up or down turns the camera
-  // where it stands - its height never changes and nothing dollies (pulled back along the line of sight
-  // instead, it swung up and down an arc about the viewer as the head tilted, and the ground came and went).
-  // Only looking almost straight down does the pull give way, level and gradually: there the camera would
-  // look at the ground behind the viewer's feet.
-  let pull = pullS * sm(-1.35, -0.9, state.pitch);
+  // The camera stands BEHIND the viewer by the pull, on the level, and turning the head (up, down or round) turns it
+  // where it stands: it never dollies, swings round the viewer or changes its lens with the look - the picture
+  // is fixed from where one is. (Pulled back along the line of sight instead, it swung up and down an arc about the
+  // viewer as the head tilted and round a circle as it turned.) Only the walk brings it round behind again.
+  let pull = pullS;
   // the near-plane window at the viewer stays above the ground: on a level look th * (0.3 + pull) <= 0.8 eye
   pull = Math.max(0, Math.min(pull, 0.8 * eye / (th0 * D / (D + pull)) - 0.3));
-  const th = th0 * D / (D + pull), n = 0.3 + pull;
+  {
+    const tx = Math.sin(state.yaw) * pull, tz = Math.cos(state.yaw) * pull;
+    if (snapped) { camX = tx; camZ = tz; }
+    else if (moving) {
+      const ex = tx - camX, ez = tz - camZ, el = Math.hypot(ex, ez);
+      if (el > 1e-6) { const k = Math.min(el, CAM.settle * walkSpeed * dt) / el; camX += ex * k; camZ += ez * k; }
+    }
+    // (never farther out than the pull allows: that is what keeps the lens clear of what stands about the viewer)
+    const cl = Math.hypot(camX, camZ);
+    if (cl > pull) { camX *= pull / cl; camZ *= pull / cl; }
+  }
+  // how far the viewer stands in front of the camera, along the level look: the near plane passes through the viewer
+  // (nothing between the viewer and the lens that is not already behind them is cut), so it is nothing once they
+  // are beside or behind it
+  const along = Math.max(0, camX * Math.sin(state.yaw) + camZ * Math.cos(state.yaw));
+  const th = th0 * D / (D + pull), n = 0.3 + along;
   // looking down, a lens shift lowers that window by n * tan(sh). Where it would reach the ground (or the top
   // of a lying stone near enough to be in it), the shift is held and the rest of the tilt is real pitch: the
   // camera turns about the viewer rather than dollying in and widening, which reads as a step forward.
   if (sh < 0) {
     const lo = 1.7 * Math.max(0, lowDist(state.pos.x, state.pos.z) - 0.35);
-    const floor = 0.2 * eye + (LOW.h + LOW.margin - 0.2 * eye) * sm(lo - 0.3, lo + 0.3, pull);
+    const floor = 0.2 * eye + (LOW.h + LOW.margin - 0.2 * eye) * sm(lo - 0.3, lo + 0.3, along);
     const maxSh = Math.atan(Math.max(0, (eye - floor) / n - th)), k = 0.04;
     // (a smooth minimum of the two, never above either)
     sh = -Math.max(0, -k * Math.log(Math.exp(sh / k) + Math.exp(-maxSh / k)));
   }
   camera.rotation.set(state.pitch - sh, state.yaw, 0, 'YXZ');
   camera.fov = (Math.atan(th) * 360) / Math.PI;
-  // (the near plane is the window at the viewer: the viewer stands pull * cos(tilt) down the line of sight)
+  // (the near plane is the window at the viewer: the viewer stands along * cos(tilt) down the line of sight)
   // ... and looking down it comes in to stay clear of the ground at the foot of the picture (the lowest ray of
   // the lens meets the ground eye / sin(a) away; the ground may rise toward it, so a margin)
   {
     const beta = Math.atan(th - Math.tan(sh)), a = -(state.pitch - sh) + beta;
-    camera.near = 0.3 + pull * Math.cos(state.pitch - sh);
+    camera.near = 0.3 + along * Math.cos(state.pitch - sh);
     if (a > 0.02) camera.near = Math.max(0.3, Math.min(camera.near, 0.6 * eye * Math.cos(beta) / Math.sin(a)));
   }
   camera.updateProjectionMatrix();
   camera.projectionMatrix.elements[9] = Math.tan(sh) / th;
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   camera.getWorldDirection(fwd);
-  camera.position.set(state.pos.x + Math.sin(state.yaw) * pull, state.pos.y, state.pos.z + Math.cos(state.yaw) * pull);
+  camera.position.set(state.pos.x + camX, state.pos.y, state.pos.z + camZ);
   camera.updateMatrixWorld(true);
   G.uCamPos.value.copy(camera.position);
   G.uPixelK.value = (2 * Math.tan((camera.fov * Math.PI) / 360)) / pipe.h;

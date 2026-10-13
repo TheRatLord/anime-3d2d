@@ -13,7 +13,7 @@ npm ci
 npm run dev   # Node 22.18+
 ```
 
-`N` toggles day/evening, `M` summer/winter, `P` painter's licence. Deploy with `npm run deploy` (Cloudflare Workers).
+`N` toggles day/evening, `M` summer/winter, `P` painter's licence. A push to `main` deploys (`.github/workflows/deploy.yml`, Cloudflare Workers); `npm run deploy` does it by hand.
 
 ## Quality
 

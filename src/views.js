@@ -1,4 +1,6 @@
 // Named camera positions used for review screenshots.
+// The stills a visitor steps through (V / B, the slideshow): a walk round the place, picked from the views below.
+export const TOUR = ['hero', 'low', 'inside', 'westwall', 'cross', 'tree', 'high', 'path', 'village', 'castle', 'rim', 'pathback'];
 export const VIEWS = {
   hero: { pos: [11, 1.7, 23], look: [-1.5, 4.2, -4], fov: 32 },
   front: { pos: [0.5, 1.6, 19], look: [0, 4.5, -9], fov: 32 },

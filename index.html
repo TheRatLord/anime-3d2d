@@ -2,9 +2,56 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Painted World</title>
-<style>html,body{margin:0;height:100%;background:#111;overflow:hidden}canvas{display:block;width:100vw;height:100vh}</style>
+<style>html,body{margin:0;height:100%;background:#111;overflow:hidden;overscroll-behavior:none}canvas{display:block;width:100vw;height:100vh;height:100dvh;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}</style>
+<style>
+#ui{--b:34px;--t:max(12px,env(safe-area-inset-top));--r:max(12px,env(safe-area-inset-right));position:fixed;inset:0;z-index:5;pointer-events:none;color:#fff;font:14px/1.45 system-ui,sans-serif;transition:opacity .4s;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+#ui[hidden]{display:none}
+.ui-bar{position:absolute;top:var(--t);right:var(--r);display:flex;gap:6px;pointer-events:auto;opacity:.9;transition:opacity .25s}
+.ui-bar:hover,.ui-bar:focus-within,#ui.open .ui-bar{opacity:1}
+.ui-btn{appearance:none;box-sizing:border-box;min-width:var(--b);height:var(--b);padding:0 10px;display:flex;align-items:center;justify-content:center;gap:6px;border:1px solid rgba(255,255,255,.45);border-radius:999px;color:inherit;background:rgba(22,30,35,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);cursor:pointer;font:600 15px/1 system-ui,sans-serif}
+.ui-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.ui-group{display:flex;align-items:stretch;box-sizing:border-box;height:var(--b);border:1px solid rgba(255,255,255,.45);border-radius:999px;background:rgba(22,30,35,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);overflow:hidden}
+.ui-group button{appearance:none;display:flex;align-items:center;gap:5px;border:0;padding:0 7px;background:none;color:inherit;font:inherit;font-variant-numeric:tabular-nums;cursor:pointer}
+.ui-group button:first-child{padding-left:9px}
+.ui-group button:last-child{padding-right:11px}
+.ui-group button:hover{background:rgba(255,255,255,.12)}
+.ui-group svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ui-count{min-width:38px;justify-content:center}
+.ui-count small{font-size:inherit;opacity:.55;margin:0 2px}
+.ui-esc{display:none;align-self:center;padding:5px 11px;border-radius:999px;background:rgba(22,30,35,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+#ui.away .ui-esc{display:block}
+.ui-panel{display:none;position:absolute;top:calc(var(--t) + var(--b) + 8px);right:var(--r);box-sizing:border-box;width:min(290px,calc(100vw - 24px));max-height:calc(100% - var(--t) - var(--b) - 20px);overflow:auto;padding:6px;border:1px solid rgba(255,255,255,.18);border-radius:12px;background:rgba(20,27,31,.74);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);pointer-events:auto}
+#ui.open .ui-panel{display:block}
+.ui-note{padding:6px 8px 8px;opacity:.85}
+.ui-row{display:flex;width:100%;align-items:center;gap:8px;padding:6px 8px;border:0;border-radius:7px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.ui-row:hover{background:rgba(255,255,255,.1)}
+.ui-row span{flex:1}
+.ui-row i{font-style:normal;opacity:.75}
+#ui kbd{font:600 12.5px ui-monospace,Consolas,monospace;opacity:.85}
+.ui-row kbd{min-width:24px;text-align:right;opacity:.7}
+.ui-hint{position:absolute;left:0;right:0;bottom:max(18px,env(safe-area-inset-bottom));text-align:center;transition:opacity 1s}
+.ui-hint span{padding:6px 13px;border-radius:999px;background:rgba(22,30,35,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.ui-hint.gone{opacity:0}
+.ui-stick{position:absolute;width:92px;height:92px;margin:-46px 0 0 -46px;border:1px solid rgba(255,255,255,.35);border-radius:50%;opacity:0;transition:opacity .2s}
+.ui-stick.on{opacity:1}
+.ui-stick b{position:absolute;left:50%;top:50%;width:36px;height:36px;margin:-18px 0 0 -18px;border-radius:50%;background:rgba(255,255,255,.3)}
+.ui-touch,.ui-hint .ui-touch{display:none}
+@media(pointer:coarse){
+#ui{--b:42px}
+.ui-keys,.ui-row kbd,.ui-btn kbd,.ui-group kbd{display:none}
+.ui-group button,.ui-group button:first-child,.ui-group button:last-child{padding:0 11px}
+.ui-group .ui-count{padding:0;min-width:34px}
+.ui-group button:hover{background:none}
+.ui-btn{padding:0}
+.ui-touch,.ui-hint .ui-touch{display:revert}
+.ui-hint .ui-keys{display:none}
+.ui-row{padding:10px 8px}
+.ui-row:hover{background:none}
+.ui-row:active{background:rgba(255,255,255,.1)}
+}
+</style>
 <style>
 #loading{position:fixed;inset:0;z-index:10;display:grid;place-content:center;justify-items:center;gap:16px;background:#182421;color:#eef1df;font:16px/1.5 system-ui,sans-serif;text-align:center}
 #loading p{margin:0}#loading small{color:#b9c7ba}

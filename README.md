@@ -4,7 +4,7 @@ Real-time 3D that reads as a 2D anime background painting — a ruined abbey in 
 
 ![Hero](docs/hero.png)
 
-**Live:** https://an-visuals.cinne.dev
+**Live:** https://chapel.cinne.dev
 
 ## Run
 
@@ -13,11 +13,11 @@ npm ci
 npm run dev   # Node 22.18+
 ```
 
-`N` toggles day/evening, `M` summer/winter, `P` painter's licence. Deploy with `npm run deploy` (Cloudflare Workers).
+`N` toggles day/evening, `M` summer/winter, `P` painter's licence. A push to `main` deploys (`.github/workflows/deploy.yml`, Cloudflare Workers); `npm run deploy` does it by hand.
 
 ## Quality
 
-`?quality=high|medium|low|minimum|auto` (default `auto`), the ⚙ button (top right) or `U` cycles. `high` is the picture as painted; the lower levels only
+`?quality=high|medium|low|minimum|auto` (default `auto`), the gear button (top right) or `U` cycles. `high` is the picture as painted; the lower levels only
 reduce MSAA, render scale and the dppx cap (`src/quality.js`). `auto` starts at `high` and steps down only after a second of
 frames slower than 25 ms, never back up, so a machine that keeps up is never touched. `?msaa=`, `?scale=` or a bare `?t=` pin
 the picture. Measuring: `tools/ft.mjs "quality=low" hero 1920x1080` (frame ms), `tools/cpuprof.mjs`, `tools/autoq.mjs`.

@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { G, HEAD, WIND, LICENCE } from './glsl.js';
 import { SUBJECT } from './world.js';
 const v1 = (x) => (+x).toFixed(3);
+// the shape id of a flat drawn character (src/extra/clawd.js): the smooth gradients of the canvas do not lie over a cel
+export const CHAR_ID = 0.9137;
 
 const FS_VS = HEAD + /* glsl */`
 in vec3 position;
@@ -168,7 +170,7 @@ void main(){
   vec2 acc = vec2(0.0);
   for (int k = 0; k < 4; k++){
     vec4 a = texture(tAux, vUv + vec2(k < 2 ? -1.0 : 1.0, (k & 1) == 0 ? -1.0 : 1.0) * uTexel);
-    float w = step(0.5, a.a);
+    float w = step(0.5, a.a) * (1.0 - step(abs(a.g - ${CHAR_ID}), 0.004));
     acc += vec2(a.b * w, w);
   }
   o = vec4(acc * 0.25, 0., 1.);
@@ -330,9 +332,12 @@ void main(){
   vec3 c = col.rgb;
   float d = aux.r;
   vec3 n0 = nrm.xyz * 2. - 1.;
+  // a flat drawn character (CHAR_ID) is a cel: no drawn edges, pale lips, kiwa, arrises or cloud-shadow edges
+  // are laid on it - each of them reads as sheen or a turning plane on a flat fill. Its own ink is a hull.
+  float cel = step(abs(aux.g - ${CHAR_ID}), 0.004);
 
   // --- cloud shadow, laid on the paint before the drawing
-  if (uCloud > 0.0 && d < 5000.0){
+  if (uCloud > 0.0 && d < 5000.0 && cel < 0.5){
     vec3 rc = vec3((uv * 2. - 1. + vec2(0.0, uLensShift)) * uTanHalf, -1.0);
     vec3 pw = (uInvView * vec4(rc * d, 1.0)).xyz;
     // (the land's own height is counted only in part: taken in full, a shadow on a slope that falls away
@@ -358,6 +363,8 @@ void main(){
     if (uCloudDbg == 1) c = mix(c, vec3(1.0, 0.2, 0.2), m * 0.6);
     if (uCloudDbg == 2) c = vec3(lit);
   }
+
+  if (cel > 0.5){ o = vec4(c, col.a); return; }
 
   // world position of this pixel, so that line break-up is anchored to the surface, not the screen
   vec3 ray = vec3((uv * 2. - 1. + vec2(0.0, uLensShift)) * uTanHalf, -1.0);
@@ -508,20 +515,25 @@ void main(){
   }
   vec3 c = texture(tSrc, vUv).rgb;
   vec3 b = texture(tBloom, vUv).rgb;
-  c = 1.0 - (1.0 - c) * (1.0 - b * uBloom);          // screen blend = diffusion filter
+  // (a flat character is a cel laid on the canvas: no diffusion bleeding in from the bright ground round him, no
+  // paper tooth, no smooth wash or vignette over him - each reads as sheen or volume on a flat fill)
+  float cel = step(abs(texture(tAux, vUv).g - ${CHAR_ID}), 0.004);
+  c = mix(1.0 - (1.0 - c) * (1.0 - b * uBloom), c, cel);          // screen blend = diffusion filter
   // paper tooth, fixed to the canvas
   float p = texture(tPaper, vUv * uRes / 512.0).r;
-  c *= 1.0 + (p - 0.5) * uGrain;
+  c *= 1.0 + (p - 0.5) * uGrain * (1.0 - cel);
   // "para": a soft cool darkening from the lower corners instead of a lens vignette
   vec2 q = vUv - 0.5;
   float v = smoothstep(0.35, 0.95, length(q * vec2(1.0, 0.85)) * 1.25);
-  c = mix(c, c * vec3(0.84, 0.88, 0.95), v * uVignette);
+  // (a flat character is a cel laid on the canvas: the wash and the vignette are smooth gradients and would
+  // read as volume on it; the paper tooth, a texture, stays)
+  c = mix(c, c * vec3(0.84, 0.88, 0.95), v * uVignette * (1.0 - cel));
   // (LICENCE: para light) ... and a warm lightening laid over the canvas from the side the sun stands on - a
   // gradient of the photography, not of the scene: none with the sun behind the viewer, most looking toward it
   if (uPara > 0.0 && uSunScreen.z > 0.0){
     float g = smoothstep(0.0, 1.1, dot(q * vec2(uRes.x / uRes.y, 1.0), uSunScreen.xy) * 1.25 + 0.22);
     vec3 warm = mix(vec3(1.0, 0.95, 0.80), vec3(1.0, 0.80, 0.60), uEve);
-    c = 1.0 - (1.0 - c) * (1.0 - warm * g * g * uSunScreen.z * uPara * mix(0.16, 0.26, uEve));
+    c = 1.0 - (1.0 - c) * (1.0 - warm * g * g * uSunScreen.z * uPara * mix(0.16, 0.26, uEve) * (1.0 - cel));
   }
   // a change of hour or season: the picture that stood before it, dissolving out (see snapshot())
   if (uHold > 0.0) c = mix(c, texture(tHold, vUv).rgb, uHold);

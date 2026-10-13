@@ -1,4 +1,4 @@
-// The interface stays out of the picture: three small buttons in a corner (hour, season, controls), the list of
+// The interface stays out of the picture: a few small buttons in a corner (hour, season, quality, controls), the list of
 // controls behind the third, a one-line hint that leaves at the first step, and two thumbs on a touch screen.
 // Faint at rest; the buttons carry their keys, and while the mouse is looking around they say how to free it.
 // Styles are in index.html.
@@ -15,12 +15,14 @@ const ICON = {
 };
 const CHEVRON = [svg('<path d="M14.5 6l-6 6 6 6"/>'), svg('<path d="M9.5 6l6 6-6 6"/>')];
 const PLAY = [svg('<path d="M8 5.5v13l10-6.5z"/>'), svg('<path d="M8.5 5.5v13M15.5 5.5v13"/>')];
+const GEAR = svg('<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>');
 const NAME = { eve: ['Day', 'Evening'], snow: ['Summer', 'Winter'] };
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; };
 
 // rows: [code, label, key, value()?, keyboardOnly?] - a row does what its key does (act(code))
 // view(): { i, n, playing } - which of the chosen stills, of how many, and whether the slideshow runs
-export function buildUI({ canvas, act, rows, mode, view, onLook }) {
+// quality(): { name, pinned } - the level as it reads, and whether the url holds it (src/quality.js)
+export function buildUI({ canvas, act, rows, mode, view, quality, onLook }) {
   const root = el('div'); root.id = 'ui';
   const bar = el('div', 'ui-bar'), panel = el('div', 'ui-panel');
   const sync = () => {
@@ -30,6 +32,10 @@ export function buildUI({ canvas, act, rows, mode, view, onLook }) {
       btn[k].setAttribute('aria-label', `${k === 'eve' ? 'Time of day' : 'Season'}: ${NAME[k][m[k]]}`);
       btn[k].setAttribute('aria-pressed', m[k] ? 'true' : 'false');
     }
+    const ql = quality();
+    gear.title = ql.pinned ? 'Quality is set by the url (msaa / scale)' : `Quality: ${ql.name} (U)`;
+    gear.setAttribute('aria-label', `Quality: ${ql.name}`);
+    gear.disabled = ql.pinned;
     const w = view();
     count.innerHTML = `${w.i}<small>/</small>${w.n}`;
     play.innerHTML = PLAY[+w.playing] + '<kbd>C</kbd>';
@@ -58,6 +64,10 @@ export function buildUI({ canvas, act, rows, mode, view, onLook }) {
     press(b, code);
     bar.appendChild(b);
   }
+  const gear = el('button', 'ui-btn', GEAR + '<kbd>U</kbd>');
+  gear.type = 'button';
+  press(gear, 'KeyU');
+  bar.appendChild(gear);
   const help = el('button', 'ui-btn', '?');
   help.type = 'button'; help.title = 'Controls (?)'; help.setAttribute('aria-expanded', 'false');
   const open = (on) => { root.classList.toggle('open', on); help.setAttribute('aria-expanded', on ? 'true' : 'false'); if (on) sync(); };

@@ -1,72 +1,32 @@
-An in progress attempt to get 2d anime visuals in 3d
+# anime-3d2d
 
-## Development
+Real-time 3D that reads as a 2D anime background painting — a ruined abbey in four states (day/evening, summer/winter).
 
-Requires Node.js 22.18 or later (or 24+).
+![Hero](docs/hero.png)
+
+**Live:** https://chapel.cinne.dev
+
+## Run
 
 ```sh
 npm ci
-npm run dev
+npm run dev   # Node 22.18+
 ```
 
-## Hour and season
+`N` toggles day/evening, `M` summer/winter, `P` painter's licence. Deploy with `npm run deploy` (Cloudflare Workers).
 
-The scene can be seen at two hours (the day it was painted for, and evening) and in two seasons (summer, and
-under snow) - four pictures of the same place. Toggle with the buttons at the top right or `N` (day / evening)
-and `M` (summer / winter); a change is a short dissolve that keeps up with the camera (both states are drawn
-for that second). The four states are baked once behind the loading screen (`?prebake=0` skips that). To open in a given state: `?time=evening`,
-`?season=winter` (or `?eve=1&snow=1`). `?flakes=0` leaves out the falling snow.
+## Quality
 
-Everything is still authored for the summer day; `src/mode.js` and the "season and hour" contract at the top of
-`src/glsl.js` describe how the other three states are laid over it.
+`?quality=high|medium|low|minimum|auto` (default `auto`), the gear button (top right) or `U` cycles. `high` is the picture as painted; the lower levels only
+reduce MSAA, render scale and the dppx cap (`src/quality.js`). `auto` starts at `high` and steps down only after a second of
+frames slower than 25 ms, never back up, so a machine that keeps up is never touched. `?msaa=`, `?scale=` or a bare `?t=` pin
+the picture. Measuring: `tools/ft.mjs "quality=low" hero 1920x1080` (frame ms), `tools/cpuprof.mjs`, `tools/autoq.mjs`.
 
-## Painter's licence
+## Clawd
 
-Five places where the picture is deliberately less true than the light and the geometry, because paint that is
-less accurate reads better. `P` switches them while looking (all but the leaf shadows, which are baked with the
-sun map); `?licence=0` opens without any of them, and each has its own strength (`0` off, `1` as painted, up to `2`):
-
-| | what it does | where |
-|---|---|---|
-| `?arris=` | Edge hierarchy. A built thing's corners are read from its planned normals and drawn by rule: a re-entrant corner gathers a dark line; a corner with light on one side and shade on the other gets none (the tones draw it); a corner with one tone either side is found only where it points at the viewer, and let go when seen edge-on. Lines swell and lift in long runs. | composite, `src/pipeline.js` |
-| `?kiwa=` | A shadow on stone is deepest against the light and opens toward its middle; the light is cleanest against the shade. Taken on the canvas, so a shaded pier is held against the sunlit wall behind it. | composite |
-| `?facing=` | The front plane of a mass sits a step above its side planes whatever the light does, and they change hands as one walks round. | `planeFacing()` in `src/glsl.js` |
-| `?loose=` | Leaf shadow is laid, not projected: a soft pool broken into dabs at its fringe, and every tree stands in a pool of it at its foot. Wall shadows stay cut. The sun map records what casts each shadow. | `leafShade()` in `src/glsl.js`, `src/terrain.js`, `src/extra/tree.js` |
-| `?para=` | A warm gradient over the canvas from the sun's side, only when looking toward it. | final pass |
-
-`?edgedbg=1..3` shows the arrises, the lines drawn of them, and the shadow-edge field.
-
-## Deployment
-
-Live site: https://chapel.cinne.dev
-
-Hosted on Cloudflare Workers Static Assets. Three.js runs in the browser; no
-server-side Worker code is required. `cloudflare.config.ts` defines the Worker
-name and custom domain, and `vite.config.js` enables the Cloudflare build output.
-
-```sh
-npx cf auth login
-npm run deploy
-```
-
-Deployment builds the app and publishes it with its custom domain. The signed-in
-Cloudflare account must manage the `cinne.dev` zone. No separate DNS record is
-needed for the Worker custom domain.
-
-To validate without publishing, run `npx cf deploy --dry-run`. Build output lives
-in `.cloudflare/output/v0/`, not `dist/`, and is excluded from version control.
-The `cf` CLI and Cloudflare Vite plugin are beta dependencies; `package-lock.json`
-locks the installed versions.
-
-## Startup
-
-The HTML loading screen paints before the scene module is evaluated and disappears
-after the first scene render. It respects reduced-motion preferences and displays
-an error if initialization fails. The `scene-ready` performance mark measures
-navigation-to-first-render submission (not GPU completion); contentful paint now
-measures the loading screen, not scene readiness.
-
-Terrain generation uses power-of-two meadow wrapping and conservative radial
-bins for flower arcs. Candidate order and floating-point accumulation are
-preserved; no geometry density, texture resolution, animation, or controls are
-reduced to improve startup.
+A 3D-modelled Clawd (`src/extra/clawd.js`) wanders the meadow, turns to the viewer, waves, hops and looks about (`?clawd=0` leaves him out).
+He is drawn as one flat cel held parallel to the canvas: the model takes the camera's own axes, its depth is squashed to a card, the
+tone is one flat colour inside an ink hull, and a head turn is the eyes sliding across the face rather than the body turning, so
+there is no angle from which a side of the block shows. Poses and positions are held at 12 drawings a second.
+Review: `node tools/clawdsheet.mjs <tag> [--az=.. --el=.. --pose=walk:0.2 --q="eve=1&snow=1"]` writes a labelled contact sheet of stations
+around him to `shots/<tag>.png`.

@@ -15,153 +15,16 @@ import * as THREE from 'three';
 import { mat, shadowMat, WIND_GLSL } from '../glsl.js';
 import { rng, height, SUN, fbm, smooth } from '../world.js';
 import { LAYOUT, disc, ground } from '../layout.js';
+import { painted } from '../paint.js';
+import { foliagePixels } from './foliage-pixels.js';
 
 const gauss = (R) => (R() + R() + R() + R() - 2) * 1.732;
 const logn = (R, sigma, lo, hi) => Math.min(hi, Math.max(lo, Math.exp(gauss(R) * sigma)));
 
 // ------------------------------------------------------------------ leaf atlas
-// 4x4 cells. R = per-leaf tone, G = leaf centre y in the cell, B = leaf centre x, A = coverage.
-// row 0: closed base masses with a fringe of small leaves, row 1: dense sprays, row 2: loose sprays, row 3: a few floating leaves.
-const ATLAS_N = 4;
+// (painted by src/extra/foliage-pixels.js, in a worker thread while the page loads if it can be)
 function makeFoliageAtlas(cell = 256) {
-  const size = cell * ATLAS_N;
-  const d = new Uint8Array(size * size * 4);
-  const U = [-0.5, -0.38, -0.2, 0.0, 0.2, 0.37, 0.5], W = [0.22, 0.66, 0.95, 1.0, 0.8, 0.45, 0.0];
-  const put = (cx0, cy0, x, y, ang, len, wid, tone, R) => {
-    // a pointed leaf: blunt base, widest before the middle, sharp tip, a little bent and lopsided
-    const bend = (R() - 0.5) * 0.7, lop = 0.8 + R() * 0.4;
-    const pts = [];
-    for (let i = 0; i < U.length; i++) pts.push([U[i], bend * (U[i] * U[i] - 0.25) + W[i] * lop * (0.88 + R() * 0.24)]);
-    for (let i = U.length - 2; i >= 0; i--) pts.push([U[i], bend * (U[i] * U[i] - 0.25) - W[i] * (2 - lop) * (0.88 + R() * 0.24)]);
-    const ca = Math.cos(ang), sa = Math.sin(ang);
-    const P = pts.map(([u, v]) => [x + (u * len) * ca - (v * wid) * sa, y + (u * len) * sa + (v * wid) * ca]);
-    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
-    for (const p of P) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); }
-    const m = 3;
-    x0 = Math.max(m, Math.floor(x0)); x1 = Math.min(cell - 1 - m, Math.ceil(x1));
-    y0 = Math.max(m, Math.floor(y0)); y1 = Math.min(cell - 1 - m, Math.ceil(y1));
-    const g = Math.floor(y / cell * 255), b = Math.floor(x / cell * 255);
-    for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) {
-      let inside = false;
-      for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
-        const xi = P[i][0], yi = P[i][1], xj = P[j][0], yj = P[j][1];
-        if ((yi > py + 0.5) !== (yj > py + 0.5) && px + 0.5 < ((xj - xi) * (py + 0.5 - yi)) / (yj - yi) + xi) inside = !inside;
-      }
-      if (!inside) continue;
-      const o = ((cy0 + py) * size + cx0 + px) * 4;
-      d[o] = tone; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
-    }
-  };
-  for (let v = 0; v < ATLAS_N * ATLAS_N; v++) {
-    const R = rng(7100 + v * 37);
-    const cx0 = (v % ATLAS_N) * cell, cy0 = Math.floor(v / ATLAS_N) * cell;
-    const row = Math.floor(v / ATLAS_N);
-    const n = row === 0 ? 200 + Math.floor(R() * 30) : row === 1 ? 26 + Math.floor(R() * 12) : row === 2 ? 10 + Math.floor(R() * 7) : 2 + Math.floor(R() * 4);
-    // a few sub-blobs so no card is a disc
-    const blobs = [];
-    const nb = row === 3 ? 2 : 3;
-    for (let i = 0; i < nb; i++) {
-      const a = R() * 6.283, rr = (row === 0 ? 0.13 : row === 1 ? 0.15 : 0.2) * cell * (0.4 + R());
-      blobs.push([cell / 2 + Math.cos(a) * rr, cell / 2 + Math.sin(a) * rr * 0.7, cell * (row === 0 ? 0.24 + R() * 0.07 : row === 1 ? 0.16 + R() * 0.1 : 0.14 + R() * 0.1)]);
-    }
-    if (row === 0) {
-      // the base masses: a closed shape (the union of the sub-blobs) fringed all round with small leaves
-      const tone = 110 + Math.floor(R() * 30);
-      for (let py = 0; py < cell; py++) for (let px = 0; px < cell; px++) {
-        let inside = false;
-        for (const bl of blobs) if (Math.hypot(px - bl[0], (py - bl[1]) / 0.85) < bl[2] * 0.86) { inside = true; break; }
-        if (!inside) continue;
-        const o = ((cy0 + py) * size + cx0 + px) * 4;
-        d[o] = tone; d[o + 1] = 128; d[o + 2] = 128; d[o + 3] = 255;
-      }
-      // sky holes: a few ragged gaps in two or three loose groups (each a couple of overlapping slanted ovals),
-      // leaf-sized to hand-sized. The leaf marks painted next partly overlap them. Under minification they
-      // close by themselves, so a crown seen from afar keeps its closed base.
-      const ng = 3 + Math.floor(R() * 3);
-      for (let gI = 0; gI < ng; gI++) {
-        const bl = blobs[Math.floor(R() * nb)], ga = R() * 6.283, gr = Math.sqrt(R()) * bl[2] * 0.62;
-        const gx = bl[0] + Math.cos(ga) * gr, gy = bl[1] + Math.sin(ga) * gr * 0.85;
-        const nh = 2 + Math.floor(R() * 4);
-        for (let hI = 0; hI < nh; hI++) {
-          const hx = gx + (R() - 0.5) * cell * 0.16, hy = gy + (R() - 0.5) * cell * 0.16;
-          const ra = cell * (0.02 + R() * R() * 0.06), rb = ra * (0.35 + R() * 0.5), rot = R() * 3.1416, cr = Math.cos(rot), sr = Math.sin(rot);
-          const m = Math.ceil(ra) + 1;
-          for (let py = Math.max(0, Math.floor(hy - m)); py <= Math.min(cell - 1, hy + m); py++) for (let px = Math.max(0, Math.floor(hx - m)); px <= Math.min(cell - 1, hx + m); px++) {
-            const u = (px - hx) * cr + (py - hy) * sr, v = -(px - hx) * sr + (py - hy) * cr;
-            if ((u * u) / (ra * ra) + (v * v) / (rb * rb) < 1) d[((cy0 + py) * size + cx0 + px) * 4 + 3] = 0;
-          }
-        }
-      }
-    }
-    // TWIGS: a spray hangs on a thin dark stem that forks out to its leaf groups (drawn first: the leaves overlap
-    // it, and it shows between them and where it leaves the spray). Tone 0..2 marks a twig texel (leaves start
-    // at 3). Own random stream: the leaves are where they were.
-    if (row === 1 || row === 2) {
-      const Q = rng(9300 + v * 53);
-      const a0 = Math.PI * 0.5 + (Q() - 0.5) * 1.6, L0 = cell * 0.24;
-      const bx0 = cell / 2 + Math.cos(a0) * L0, by0 = cell / 2 + Math.sin(a0) * L0;
-      const segs = [];
-      // (the stem to the group nearest the cell's middle, a kink on the way; side twigs to the other groups)
-      const hub = [cell / 2 + (Q() - 0.5) * cell * 0.12, cell / 2 + (Q() - 0.5) * cell * 0.12];
-      const kx = (bx0 + hub[0]) / 2 + (Q() - 0.5) * cell * 0.08, ky = (by0 + hub[1]) / 2 + (Q() - 0.5) * cell * 0.08;
-      segs.push([bx0, by0, kx, ky, 0.013, 0.011], [kx, ky, hub[0], hub[1], 0.011, 0.009]);
-      for (const bl of blobs) {
-        const ex = bl[0] + (bl[0] - hub[0]) * 0.35 + (Q() - 0.5) * cell * 0.05, ey = bl[1] + (bl[1] - hub[1]) * 0.35 + (Q() - 0.5) * cell * 0.05;
-        const mx = (hub[0] + ex) / 2 + (Q() - 0.5) * cell * 0.05, my = (hub[1] + ey) / 2 + (Q() - 0.5) * cell * 0.05;
-        segs.push([hub[0], hub[1], mx, my, 0.009, 0.006], [mx, my, ex, ey, 0.006, 0.003]);
-      }
-      for (const [x0, y0, x1, y1, w0, w1] of segs) {
-        const lx = x1 - x0, ly = y1 - y0, ll = lx * lx + ly * ly || 1, m = cell * 0.02;
-        for (let py = Math.max(3, Math.floor(Math.min(y0, y1) - m)); py <= Math.min(cell - 4, Math.ceil(Math.max(y0, y1) + m)); py++)
-          for (let px = Math.max(3, Math.floor(Math.min(x0, x1) - m)); px <= Math.min(cell - 4, Math.ceil(Math.max(x0, x1) + m)); px++) {
-            const tt = Math.max(0, Math.min(1, ((px + 0.5 - x0) * lx + (py + 0.5 - y0) * ly) / ll));
-            const dd = Math.hypot(px + 0.5 - x0 - lx * tt, py + 0.5 - y0 - ly * tt), hw = Math.max(0.75, cell * (w0 + (w1 - w0) * tt) * 0.5);
-            if (dd > hw) continue;
-            const o = ((cy0 + py) * size + cx0 + px) * 4;
-            d[o] = 1; d[o + 1] = 128; d[o + 2] = 128; d[o + 3] = 255;
-          }
-      }
-    }
-    for (let i = 0; i < n; i++) {
-      const bl = blobs[Math.floor(R() * nb)];
-      // (base masses: most leaves on the rim, the rest scattered inside as marks)
-      const a = R() * 6.283, rr = (row === 0 ? (i % 3 ? 0.72 + R() * 0.42 : Math.sqrt(R()) * 0.8) : Math.pow(R(), 0.6)) * bl[2];
-      let x = bl[0] + Math.cos(a) * rr, y = bl[1] + Math.sin(a) * rr * 0.8;
-      // leaf marks differ about 3:1 in length inside one card as well
-      const len = cell * (row === 0 ? 0.064 : 0.115) * logn(R, 0.36, 0.55, 1.75);
-      const wid = len * (row === 0 ? 0.24 + R() * 0.1 : 0.19 + R() * 0.1);
-      const lim = cell * 0.5 - len * 0.6 - 4;
-      const dx = x - cell / 2, dy = y - cell / 2, dl = Math.hypot(dx, dy);
-      if (dl > lim) { x = cell / 2 + dx / dl * lim; y = cell / 2 + dy / dl * lim; }
-      // leaves fan outward from the blob and hang a little
-      const ang = a + (R() - 0.5) * 2.2 - 0.25 * Math.sign(Math.cos(a));
-      put(cx0, cy0, x, y, ang, len, wid, Math.max(3, Math.floor(R() * 256)), R);
-    }
-  }
-  // the box each cell's leaves actually fill (in cell units, with a 3-texel margin): the cards are cut
-  // down to it, so the empty border of a cell is never rasterised
-  const boxes = [];
-  for (let v = 0; v < ATLAS_N * ATLAS_N; v++) {
-    const cx0 = (v % ATLAS_N) * cell, cy0 = Math.floor(v / ATLAS_N) * cell;
-    let x0 = cell, x1 = 0, y0 = cell, y1 = 0;
-    for (let y = 0; y < cell; y++) for (let x = 0; x < cell; x++) if (d[((cy0 + y) * size + cx0 + x) * 4 + 3]) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
-    boxes.push(new THREE.Vector4(Math.max(0, x0 - 3) / cell, Math.max(0, y0 - 3) / cell, Math.min(cell, x1 + 4) / cell, Math.min(cell, y1 + 4) / cell));
-  }
-  // bleed leaf data into the empty texels around leaves so filtering never mixes in zeros
-  let filled = new Uint8Array(size * size);
-  for (let i = 0; i < size * size; i++) filled[i] = d[i * 4 + 3] ? 1 : 0;
-  for (let it = 0; it < 6; it++) {
-    const nf = filled.slice();
-    for (let y = 1; y < size - 1; y++) for (let x = 1; x < size - 1; x++) {
-      const i = y * size + x;
-      if (filled[i]) continue;
-      const nb = filled[i - 1] ? i - 1 : filled[i + 1] ? i + 1 : filled[i - size] ? i - size : filled[i + size] ? i + size : -1;
-      if (nb < 0) continue;
-      d[i * 4] = d[nb * 4]; d[i * 4 + 1] = d[nb * 4 + 1]; d[i * 4 + 2] = d[nb * 4 + 2];
-      nf[i] = 1;
-    }
-    filled = nf;
-  }
+  const { d, size, boxes } = painted.foliage ?? foliagePixels(cell);
   const t = new THREE.DataTexture(d, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
   t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
   t.minFilter = THREE.LinearMipmapLinearFilter;
@@ -169,7 +32,7 @@ function makeFoliageAtlas(cell = 256) {
   t.generateMipmaps = true;
   t.anisotropy = 4;
   t.needsUpdate = true;
-  t.userData.boxes = boxes;
+  t.userData.boxes = boxes.map((b) => new THREE.Vector4(...b));
   return t;
 }
 
@@ -891,6 +754,8 @@ const leafRow = (o) => {
   return [c(pal[0]), c(pal[1]), hazed(deepTeal(pal[1]), f), c(pal[2]), c(pal[3]), c(pal[4]), [o.jitter ?? 0.22, o.id ?? 0.4, o.bias ?? 0], cr];
 };
 
+const CARD_LISTS = [];     // (the renewal of each card list: see Cards.mesh)
+
 // collects leaf cards (of any number of trees: `row` is the palette row the next cards belong to)
 class Cards {
   constructor() { this.P = []; this.D = []; this.L = []; this.B = []; this.T = []; this.row = 0; }
@@ -940,33 +805,76 @@ class Cards {
     const src = names.map((k) => ig.getAttribute(k).array.slice()), P0 = src[0];
     for (const k of names) ig.getAttribute(k).setUsage(THREE.DynamicDrawUsage);
     const NB = 1024, count = new Uint32Array(NB + 1), key = new Uint16Array(n), order = new Uint32Array(n), last = new THREE.Vector3(1e9, 0, 0);
-    const sort = (c) => {
+    // CULLING. The same pass lays the cards the eye cannot see out of the list (behind it, or beside the picture):
+    // none of them is drawn, and the vertex shader never meets them. A card is kept if its sphere (its size, the
+    // sway, and what the eye may move before the list is renewed: 2 m, ROT degrees) touches the frustum. The
+    // sun map needs them all (it is drawn from the sun, with an orthographic camera) and gets the full list.
+    const ROT = 10, cosHalfRot = Math.cos((ROT * Math.PI) / 360), sinRot = Math.sin((ROT * Math.PI) / 180);
+    const SIZE = src[1], frustum = new THREE.Frustum(), pv = new THREE.Matrix4(), lastQ = new THREE.Quaternion(), built = new THREE.Vector3(1e9, 0, 0), lastP = new Float64Array(4);   // (float64, as it is compared with the projection's)
+    let full = false;
+    const restP = new THREE.Vector3(1e9, 0, 0), restQ = new THREE.Quaternion();
+    const sort = (c, cam, cull, eye) => {
       count.fill(0);
+      if (cull) frustum.setFromProjectionMatrix(pv.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+      const pl = frustum.planes;
       for (let i = 0; i < n; i++) {
-        const d = Math.hypot(P0[i * 3] - c.x, P0[i * 3 + 1] - c.y, P0[i * 3 + 2] - c.z);
+        const x = P0[i * 3], y = P0[i * 3 + 1], z = P0[i * 3 + 2];
+        const d = Math.hypot(x - c.x, y - c.y, z - c.z);
+        if (cull) {
+          const r = SIZE[i * 4] * 1.5 + 3.5 + Math.hypot(x - eye.x, y - eye.y, z - eye.z) * sinRot;
+          let out = false;
+          for (let k = 0; k < 6; k++) { const p = pl[k]; if (p.normal.x * x + p.normal.y * y + p.normal.z * z + p.constant < -r) { out = true; break; } }
+          if (out) { key[i] = 0xffff; continue; }
+        }
         const b = Math.min(NB - 1, (Math.sqrt(d * (1 / 160)) * NB) | 0);      // finer steps near the eye
         key[i] = b; count[b + 1]++;
       }
       for (let b = 0; b < NB; b++) count[b + 1] += count[b];
-      for (let i = 0; i < n; i++) order[count[key[i]]++] = i;
+      let nv = 0;
+      for (let i = 0; i < n; i++) if (key[i] !== 0xffff) { order[count[key[i]]++] = i; nv++; }
       names.forEach((k, a) => {
         const at = ig.getAttribute(k), sz = at.itemSize, from = src[a], to = at.array;
-        for (let i = 0; i < n; i++) { const f = order[i] * sz, t = i * sz; for (let j = 0; j < sz; j++) to[t + j] = from[f + j]; }
+        for (let i = 0; i < nv; i++) { const f = order[i] * sz, t = i * sz; for (let j = 0; j < sz; j++) to[t + j] = from[f + j]; }
+        at.clearUpdateRanges(); at.addUpdateRange(0, nv * sz);
         at.needsUpdate = true;
       });
+      ig.instanceCount = nv;
     };
-    m.onBeforeRender = (r, sc, cam) => {
-      um.value = MAX_PX * Math.pow(r.getDrawingBufferSize(v2).y / 720, 0.6);
-      if (m.userData.sort && cam.isPerspectiveCamera && cam.position.distanceToSquared(last) > 4) { last.copy(cam.position); sort(last); }
-    };
+    m.onBeforeRender = (r) => { um.value = MAX_PX * Math.pow(r.getDrawingBufferSize(v2).y / 720, 0.6); };
+    // (called by the scene before it is drawn - the buffers are sent to the GPU as the draw list is made, so a list
+    // renewed any later would only arrive with the next frame)
+    CARD_LISTS.push((cam) => {
+      if (!m.userData.sort) return;
+      if (!cam.isPerspectiveCamera) {
+        // (the sun map: every card, in the order they were last laid out)
+        if (!full) { full = true; ig.instanceCount = n; names.forEach((k, a) => { const at = ig.getAttribute(k); at.array.set(src[a]); at.clearUpdateRanges(); at.needsUpdate = true; }); }
+        return;
+      }
+      const pe = cam.projectionMatrix.elements;
+      // (the order is renewed where the eye has moved 2 m from where it was last laid out; the list of cards in
+      // view whenever the eye has moved 2 m, or turned ROT degrees, from where that was last made)
+      const moved = full || cam.position.distanceToSquared(built) > 4 || lastP[0] !== pe[0] || lastP[1] !== pe[5] || lastP[2] !== pe[8] || lastP[3] !== pe[9]
+        || Math.abs(lastQ.dot(cam.quaternion)) < cosHalfRot;
+      // (and when the eye comes to rest anywhere but where the list was made, once more: a picture that stands
+      // still is always the one made for exactly where it is seen from)
+      const still = cam.position.equals(restP) && restQ.equals(cam.quaternion);
+      restP.copy(cam.position); restQ.copy(cam.quaternion);
+      if (!moved) {
+        if (!still || (cam.position.equals(built) && lastQ.equals(cam.quaternion))) return;
+      }
+      if (cam.position.distanceToSquared(last) > 4) last.copy(cam.position);
+      full = false; built.copy(cam.position); lastQ.copy(cam.quaternion); lastP[0] = pe[0]; lastP[1] = pe[5]; lastP[2] = pe[8]; lastP[3] = pe[9];
+      sort(last, cam, CULL, built);
+    });
     // (for measuring: userData.sort = false and unsort() put the cards back in the order they were built in)
     m.userData.sort = SORT;
-    m.userData.unsort = () => { names.forEach((k, a) => { const at = ig.getAttribute(k); at.array.set(src[a]); at.needsUpdate = true; }); last.set(1e9, 0, 0); };
+    m.userData.unsort = () => { ig.instanceCount = n; full = true; names.forEach((k, a) => { const at = ig.getAttribute(k); at.array.set(src[a]); at.needsUpdate = true; }); last.set(1e9, 0, 0); };
     return m;
   }
 }
 const BOW_K = +(new URLSearchParams(location.search).get('bow') ?? 1);
 const A2C = new URLSearchParams(location.search).get('a2c') !== '0';
+const CULL = new URLSearchParams(location.search).get('cull') !== '0';        // (?cull=0: every card is drawn)
 const SORT = new URLSearchParams(location.search).get('leafsort') !== '0';
 const BLOB_SIDE = new URLSearchParams(location.search).get('blob2') === '1' ? THREE.DoubleSide : THREE.FrontSide;
 
@@ -1495,14 +1403,17 @@ export function makeTree(ctx, o) {
   // append the skeleton to the shared trunk mesh. Per vertex: how deep it sits inside a clump's solid core (0 outside, 1 well inside)
   const T = ctx.trunk, v0 = T.pos.length / 3;
   const shrink = new Float32Array(geo.v.length);
+  // (the clump centres, shifted toward the light, found once; the nearest clump by its squared distance)
+  const cl = clumps.map((c) => [c.c.x - SUN.x * BLOB_SHIFT * c.a, c.c.y - SUN.y * BLOB_SHIFT * 1.25 * c.b, c.c.z - SUN.z * BLOB_SHIFT * c.a, c.a, c.b]);
   for (let i = 0; i < geo.v.length; i++) {
     const x = geo.pos[i * 3], y = geo.pos[i * 3 + 1], z = geo.pos[i * 3 + 2];
-    let m = 9;
-    for (const c of clumps) {
-      const cx = c.c.x - SUN.x * BLOB_SHIFT * c.a, cy = c.c.y - SUN.y * BLOB_SHIFT * 1.25 * c.b, cz = c.c.z - SUN.z * BLOB_SHIFT * c.a;
-      const dy = y - cy;
-      m = Math.min(m, Math.hypot((x - cx) / c.a, dy / (c.b * (dy < 0 ? 0.55 : 1)), (z - cz) / c.a));
+    let m2 = 81;
+    for (let k = 0; k < cl.length; k++) {
+      const c = cl[k], dy = y - c[1], ux = (x - c[0]) / c[3], uy = dy / (c[4] * (dy < 0 ? 0.55 : 1)), uz = (z - c[2]) / c[3];
+      const d2 = ux * ux + uy * uy + uz * uz;
+      if (d2 < m2) m2 = d2;
     }
+    const m = Math.sqrt(m2);
     // (wide: a limb is in the shade of a leaf mass well before it enters its core, so the stretch of a
     // bough seen in a gap between two masses is one dark stroke, not a lit plank)
     // (a main limb is never 'inside' right where it leaves the trunk: the change from bark to the dark of the
@@ -1561,12 +1472,13 @@ export function makeTree(ctx, o) {
     const Q2 = rng((o.seed ?? 7) * 257 + 3);
     for (const lp of limbPts) {
       if (lp.r < 0.03 || lp.tip) { continue; }
-      let m = 9;
-      for (const c of clumps) {
-        const cx = c.c.x - SUN.x * BLOB_SHIFT * c.a, cy = c.c.y - SUN.y * BLOB_SHIFT * 1.25 * c.b, cz = c.c.z - SUN.z * BLOB_SHIFT * c.a;
-        const dy = lp.p.y - cy;
-        m = Math.min(m, Math.hypot((lp.p.x - cx) / c.a, dy / (c.b * (dy < 0 ? 0.55 : 1)), (lp.p.z - cz) / c.a));
+      let m2 = 81;
+      for (let k = 0; k < cl.length; k++) {
+        const c = cl[k], dy = lp.p.y - c[1], ux = (lp.p.x - c[0]) / c[3], uy = dy / (c[4] * (dy < 0 ? 0.55 : 1)), uz = (lp.p.z - c[2]) / c[3];
+        const d2 = ux * ux + uy * uy + uz * uz;
+        if (d2 < m2) m2 = d2;
       }
+      const m = Math.sqrt(m2);
       const inside = 1 - smooth(BLOB_K * 0.85, BLOB_K * 3.2, m);
       if (inside < 0.08) {
         // an EXPOSED run of a bough (not the main limbs where they leave the trunk): a loose spray of leaves
@@ -1755,6 +1667,10 @@ export default function (scene) {
   scene.add(blobMesh(atlas));
   scene.add(trunkMesh(ctx.trunk, ctx.barkTab.texture()));
   scene.add(ctx.cards.mesh(atlas, pal, {}));
+  {
+    const prev = scene.onBeforeRender;
+    scene.onBeforeRender = function (r, sc, cam, rt) { prev.call(this, r, sc, cam, rt); for (const f of CARD_LISTS) f(cam); };
+  }
   scene.add(bushes.mesh(atlas, pal, { probe: true, wind: 0.012 }));
   scene.add(poolMesh(TREES));
   window.__foliage = stats.map((s) => s.count);

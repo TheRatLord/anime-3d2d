@@ -1,0 +1,10 @@
+import { chromium } from 'playwright-core';
+import { serve } from './serve.mjs';
+const srv = await serve();
+const b = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true, args: ['--use-angle=vulkan', '--enable-features=Vulkan', '--ignore-gpu-blocklist', '--enable-gpu'] });
+const p = await b.newPage();
+await p.goto(srv.url + '?hud=0');
+await p.waitForFunction(() => window.__app && window.__app.stat.frames > 5);
+await p.waitForTimeout(3000);
+console.log(await p.evaluate(() => window.__app.renderer.info.programs.map((q) => q.name + ' used=' + q.usedTimes + ' ' + q.cacheKey.slice(0, 200))));
+await b.close(); await srv.close();

@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { G, HEAD, WIND, LICENCE } from './glsl.js';
 import { SUBJECT } from './world.js';
 const v1 = (x) => (+x).toFixed(3);
+// the shape id of a flat drawn character (src/extra/clawd.js): the smooth gradients of the canvas do not lie over a cel
+export const CHAR_ID = 0.9137;
 
 const FS_VS = HEAD + /* glsl */`
 in vec3 position;
@@ -67,6 +69,30 @@ float describe(vec2 uv){
 }
 `;
 
+// The 37 taps of the Kuwahara filter, and what each adds to which of the eight sectors, laid out as straight
+// code: the weights depend on the tap alone, and a tap lies in only some of the sectors (the rest add nothing).
+const KUWAHARA_TAPS = (() => {
+  const zeta = 2 / 3, zc = 0.58, eta = (zeta + Math.cos(zc)) / (Math.sin(zc) * Math.sin(zc));
+  const f = (x) => { const t = Math.fround(x).toPrecision(9); return /[.e]/.test(t) ? t : t + '.0'; };
+  let out = '';
+  for (let j = -3; j <= 3; j++) for (let i = -3; i <= 3; i++) {
+    const vx = i / 3, vy = j / 3;
+    if (vx * vx + vy * vy > 1) continue;
+    const w = new Array(8).fill(0);
+    let vxx = zeta - eta * vx * vx, vyy = zeta - eta * vy * vy, z, sum = 0;
+    const put = (k, a) => { z = Math.max(0, a); w[k] = z * z; sum += w[k]; };
+    put(0, vy + vxx); put(2, -vx + vyy); put(4, -vy + vxx); put(6, vx + vyy);
+    const ux = 0.70710678 * (vx - vy), uy = 0.70710678 * (vx + vy);
+    vxx = zeta - eta * ux * ux; vyy = zeta - eta * uy * uy;
+    put(1, uy + vxx); put(3, -ux + vyy); put(5, -uy + vxx); put(7, ux + vyy);
+    const g = Math.exp(-3.125 * (vx * vx + vy * vy)) / Math.max(sum, 1e-5);
+    out += `  { vec3 c = textureLod(tColor, vUv + vec2(${i}.0, ${j}.0) * stepPx * uTexel, lod).rgb; vec3 cc = c * c;\n`;
+    for (let k = 0; k < 8; k++) if (w[k] > 0) out += `    { float wk = ${f(w[k] * g)}; m[${k}] += vec4(c * wk, wk); s[${k}] += cc * wk; }\n`;
+    out += '  }\n';
+  }
+  return out;
+})();
+
 // ---- 1. paint filter: 4-sector Kuwahara. Flattens small detail into dabs, rounds corners,
 // keeps edges hard. Per-pixel strength comes from colour alpha.
 const KUWAHARA_FS = /* glsl */`
@@ -93,28 +119,7 @@ void main(){
   float eta = (zeta + cos(zc)) / (sin(zc) * sin(zc));
   vec4 m[8]; vec3 s[8];
   for (int k = 0; k < 8; k++){ m[k] = vec4(0.0); s[k] = vec3(0.0); }
-  for (int j = -R; j <= R; j++) for (int i = -R; i <= R; i++){
-    vec2 v = vec2(float(i), float(j)) / 3.0;
-    if (dot(v, v) > 1.0) continue;
-    vec3 c = textureLod(tColor, vUv + vec2(float(i), float(j)) * stepPx * uTexel, lod).rgb;
-    float w[8]; float sum = 0.0; float z, vxx, vyy;
-    vxx = zeta - eta * v.x * v.x; vyy = zeta - eta * v.y * v.y;
-    z = max(0.0,  v.y + vxx); w[0] = z * z; sum += w[0];
-    z = max(0.0, -v.x + vyy); w[2] = z * z; sum += w[2];
-    z = max(0.0, -v.y + vxx); w[4] = z * z; sum += w[4];
-    z = max(0.0,  v.x + vyy); w[6] = z * z; sum += w[6];
-    vec2 u = 0.70710678 * vec2(v.x - v.y, v.x + v.y);
-    vxx = zeta - eta * u.x * u.x; vyy = zeta - eta * u.y * u.y;
-    z = max(0.0,  u.y + vxx); w[1] = z * z; sum += w[1];
-    z = max(0.0, -u.x + vyy); w[3] = z * z; sum += w[3];
-    z = max(0.0, -u.y + vxx); w[5] = z * z; sum += w[5];
-    z = max(0.0,  u.x + vyy); w[7] = z * z; sum += w[7];
-    float g = exp(-3.125 * dot(v, v)) / max(sum, 1e-5);
-    for (int k = 0; k < 8; k++){
-      float wk = w[k] * g;
-      m[k] += vec4(c * wk, wk); s[k] += c * c * wk;
-    }
-  }
+${KUWAHARA_TAPS}
   vec4 acc = vec4(0.0);
   for (int k = 0; k < 8; k++){
     m[k].rgb /= max(m[k].w, 1e-5);
@@ -165,7 +170,7 @@ void main(){
   vec2 acc = vec2(0.0);
   for (int k = 0; k < 4; k++){
     vec4 a = texture(tAux, vUv + vec2(k < 2 ? -1.0 : 1.0, (k & 1) == 0 ? -1.0 : 1.0) * uTexel);
-    float w = step(0.5, a.a);
+    float w = step(0.5, a.a) * (1.0 - step(abs(a.g - ${CHAR_ID}), 0.004));
     acc += vec2(a.b * w, w);
   }
   o = vec4(acc * 0.25, 0., 1.);
@@ -327,9 +332,12 @@ void main(){
   vec3 c = col.rgb;
   float d = aux.r;
   vec3 n0 = nrm.xyz * 2. - 1.;
+  // a flat drawn character (CHAR_ID) is a cel: no drawn edges, pale lips, kiwa, arrises or cloud-shadow edges
+  // are laid on it - each of them reads as sheen or a turning plane on a flat fill. Its own ink is a hull.
+  float cel = step(abs(aux.g - ${CHAR_ID}), 0.004);
 
   // --- cloud shadow, laid on the paint before the drawing
-  if (uCloud > 0.0 && d < 5000.0){
+  if (uCloud > 0.0 && d < 5000.0 && cel < 0.5){
     vec3 rc = vec3((uv * 2. - 1. + vec2(0.0, uLensShift)) * uTanHalf, -1.0);
     vec3 pw = (uInvView * vec4(rc * d, 1.0)).xyz;
     // (the land's own height is counted only in part: taken in full, a shadow on a slope that falls away
@@ -355,6 +363,8 @@ void main(){
     if (uCloudDbg == 1) c = mix(c, vec3(1.0, 0.2, 0.2), m * 0.6);
     if (uCloudDbg == 2) c = vec3(lit);
   }
+
+  if (cel > 0.5){ o = vec4(c, col.a); return; }
 
   // world position of this pixel, so that line break-up is anchored to the surface, not the screen
   vec3 ray = vec3((uv * 2. - 1. + vec2(0.0, uLensShift)) * uTanHalf, -1.0);
@@ -505,20 +515,25 @@ void main(){
   }
   vec3 c = texture(tSrc, vUv).rgb;
   vec3 b = texture(tBloom, vUv).rgb;
-  c = 1.0 - (1.0 - c) * (1.0 - b * uBloom);          // screen blend = diffusion filter
+  // (a flat character is a cel laid on the canvas: no diffusion bleeding in from the bright ground round him, no
+  // paper tooth, no smooth wash or vignette over him - each reads as sheen or volume on a flat fill)
+  float cel = step(abs(texture(tAux, vUv).g - ${CHAR_ID}), 0.004);
+  c = mix(1.0 - (1.0 - c) * (1.0 - b * uBloom), c, cel);          // screen blend = diffusion filter
   // paper tooth, fixed to the canvas
   float p = texture(tPaper, vUv * uRes / 512.0).r;
-  c *= 1.0 + (p - 0.5) * uGrain;
+  c *= 1.0 + (p - 0.5) * uGrain * (1.0 - cel);
   // "para": a soft cool darkening from the lower corners instead of a lens vignette
   vec2 q = vUv - 0.5;
   float v = smoothstep(0.35, 0.95, length(q * vec2(1.0, 0.85)) * 1.25);
-  c = mix(c, c * vec3(0.84, 0.88, 0.95), v * uVignette);
+  // (a flat character is a cel laid on the canvas: the wash and the vignette are smooth gradients and would
+  // read as volume on it; the paper tooth, a texture, stays)
+  c = mix(c, c * vec3(0.84, 0.88, 0.95), v * uVignette * (1.0 - cel));
   // (LICENCE: para light) ... and a warm lightening laid over the canvas from the side the sun stands on - a
   // gradient of the photography, not of the scene: none with the sun behind the viewer, most looking toward it
   if (uPara > 0.0 && uSunScreen.z > 0.0){
     float g = smoothstep(0.0, 1.1, dot(q * vec2(uRes.x / uRes.y, 1.0), uSunScreen.xy) * 1.25 + 0.22);
     vec3 warm = mix(vec3(1.0, 0.95, 0.80), vec3(1.0, 0.80, 0.60), uEve);
-    c = 1.0 - (1.0 - c) * (1.0 - warm * g * g * uSunScreen.z * uPara * mix(0.16, 0.26, uEve));
+    c = 1.0 - (1.0 - c) * (1.0 - warm * g * g * uSunScreen.z * uPara * mix(0.16, 0.26, uEve) * (1.0 - cel));
   }
   // a change of hour or season: the picture that stood before it, dissolving out (see snapshot())
   if (uHold > 0.0) c = mix(c, texture(tHold, vUv).rgb, uHold);
@@ -592,6 +607,18 @@ export class Pipeline {
     this.qTexel = new THREE.Vector2(1 / qw, 1 / qh);
   }
 
+  // hands the post passes to the driver to link (see precompile() in src/main.js); nothing waits for them
+  precompile() {
+    const r = this.r, prev = r.getRenderTarget();
+    for (const [m, t] of [[this.kuw, this.rtA], [this.depthDown, this.q1], [this.litDown, this.q3], [this.blur, this.q2], [this.comp, this.rtB],
+      [this.bright, this.b1], [this.final, this.hold], [this.final, null]]) {
+      this.tri.material = m;
+      r.setRenderTarget(t);
+      r.compile(this.fsScene, this.fsCam);
+    }
+    r.setRenderTarget(prev);
+  }
+
   _fs(material, target) {
     this.tri.material = material;
     this.r.setRenderTarget(target);
@@ -605,11 +632,8 @@ export class Pipeline {
     if (!slot) {
       if (this.shadowSlots.length < 2) {
         // (its colour is the kind of caster - G.uShadowKind - read blurred, from the mips)
-        const S = 4096, rt = new THREE.WebGLRenderTarget(S, S, { depthBuffer: true, format: THREE.RedFormat });
-        rt.texture.minFilter = THREE.LinearMipmapLinearFilter; rt.texture.magFilter = THREE.LinearFilter; rt.texture.generateMipmaps = true;
-        rt.depthTexture = new THREE.DepthTexture(S, S, THREE.UnsignedIntType);
-        rt.depthTexture.minFilter = rt.depthTexture.magFilter = THREE.NearestFilter;
-        slot = { rt, mat: new THREE.Matrix4(), used: 0 };
+        slot = { rt: this.shadowRT(), mat: new THREE.Matrix4(), used: 0 };
+        this._preRT = null;
         this.shadowSlots.push(slot);
       } else slot = this.shadowSlots.filter((q) => q.key !== keep).sort((a, b) => a.used - b.used)[0];
       slot.key = key; force = true;
@@ -620,6 +644,16 @@ export class Pipeline {
     G.uShadowKind.value = slot.rt.texture;
     G.uShadowMat.value.copy(slot.mat);
     return painted;
+  }
+
+  // a sun map target (the one the next slot will take, so that programs can be linked for it before it is wanted)
+  shadowRT() {
+    if (this._preRT) return this._preRT;
+    const S = 4096, rt = new THREE.WebGLRenderTarget(S, S, { depthBuffer: true, format: THREE.RedFormat });
+    rt.texture.minFilter = THREE.LinearMipmapLinearFilter; rt.texture.magFilter = THREE.LinearFilter; rt.texture.generateMipmaps = true;
+    rt.depthTexture = new THREE.DepthTexture(S, S, THREE.UnsignedIntType);
+    rt.depthTexture.minFilter = rt.depthTexture.magFilter = THREE.NearestFilter;
+    return (this._preRT = rt);
   }
 
   renderShadow(scene, sunDir, center, slot) {

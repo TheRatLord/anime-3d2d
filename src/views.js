@@ -12,6 +12,9 @@ export const VIEWS = {
   low: { pos: [6.5, 0.5, 13], look: [0, 3.5, -6], fov: 36 },
   close: { pos: [-2.8, 1.5, -5.5], look: [-5, 2.6, -9], fov: 36 },
   down: { pos: [3, 7, 9], look: [1, 0, 3], fov: 40 },
+  // Clawd (src/extra/clawd.js) walks about the meadow; these look at where he starts
+  clawd: { pos: [9, 1.7, 21], look: [4.5, 0.6, 12.8], fov: 32 },
+  clawdNear: { pos: [6.5, 1.6, 16.5], look: [4.5, 0.6, 12.8], fov: 36 },
   // tree / shrub review views
   tree: { pos: [2, 1.7, 30], look: [-11, 7, 3.5], fov: 36 },
   frame: { pos: [12.5, 1.7, 27.5], look: [0, 4.5, -4], fov: 34 },
